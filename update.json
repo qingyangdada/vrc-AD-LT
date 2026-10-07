@@ -1,7 +1,7 @@
 {
-  "versionName": "1.7.17",
-  "versionCode": 81,
-  "apkUrl": "https://github.com/qingyangdada/vrc-AD-LT/releases/download/1.7.17/VRChatFriendTracker-1.7.17-debug.apk",
+  "versionName": "1.7.18",
+  "versionCode": 82,
+  "apkUrl": "https://github.com/qingyangdada/vrc-AD-LT/releases/download/1.7.18/VRChatFriendTracker-1.7.18-debug.apk",
   "pageUrl": "https://github.com/qingyangdada/vrc-AD-LT/releases",
-  "notes": "1.7.17：人称代词移到名字/状态下面显示（带「修改」入口）；去掉右侧信任等级徽章，靠名字颜色区分即可。"
+  "notes": "1.7.18：我的资料页重新排版——统一标题/正文层级（标题 titleMedium、正文 14sp 带行高）、卡片圆角 18dp、间距 14/18dp；名字加大到 24sp 并加状态圆点；编辑入口统一为小图标「修改」标签，不再占 48dp 高度；账号信息带图标行。"
 }
