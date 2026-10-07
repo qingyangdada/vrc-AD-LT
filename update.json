@@ -1,7 +1,7 @@
 {
   "versionName": "1.8.0",
-  "versionCode": 83,
+  "versionCode": 84,
   "apkUrl": "https://github.com/qingyangdada/vrc-AD-LT/releases/download/1.8.0/VRChatFriendTracker-1.8.0-debug.apk",
   "pageUrl": "https://github.com/qingyangdada/vrc-AD-LT/releases",
-  "notes": "1.8.0：版本号升到 1.8 系列。内容同 1.7.18——我的资料页重排：统一标题/正文字号与行高、卡片圆角 18dp、间距 14/18dp；名字 24sp + 状态圆点；编辑入口统一为小号「✎ 修改」标签；账号信息带图标行；人称代词在名字下方；已去掉右侧信任等级徽章。"
+  "notes": "1.8.0（修正版，安装包已同名替换）：修复进入「我的资料」返回主页后再点左上角三条横线会白屏的问题。定位为页面切换动画/抽屉动画被打断后界面停在半成品状态：现已关闭页面切换动画、给内容区铺上不透明主题底色（不再露出白色窗口背景）、抽屉状态改为单一数据源并限制偏移范围；返回键改用 navigateUp，避免返回栈被弹空导致空白窗口。若仍出现白屏，请在设置里复制日志反馈。"
 }

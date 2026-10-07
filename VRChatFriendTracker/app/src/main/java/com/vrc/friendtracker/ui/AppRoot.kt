@@ -4,8 +4,12 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.rememberScrollState
@@ -18,7 +22,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -31,6 +37,7 @@ import com.vrc.friendtracker.ui.detail.FriendDetailScreen
 import com.vrc.friendtracker.ui.friends.FriendsScreen
 import com.vrc.friendtracker.ui.history.HistoryScreen
 import com.vrc.friendtracker.ui.login.LoginScreen
+import com.vrc.friendtracker.ui.own.OwnProfileScreen
 import com.vrc.friendtracker.ui.settings.SettingsScreen
 
 object Screen {
@@ -38,6 +45,7 @@ object Screen {
     const val FRIENDS = "friends"
     const val SETTINGS = "settings"
     const val HISTORY = "history"
+    const val ME = "me"
     fun friend(id: String) = "friend/$id"
 }
 
@@ -47,6 +55,13 @@ fun AppRoot() {
     val app = context.applicationContext as VrApp
     val navController = rememberNavController()
     val sessionActive by app.sessionActive.collectAsState()
+    // The graph start destination is captured once: passing a value that can
+    // flip would rebuild the graph (and reset the back stack) whenever the
+    // session state changed.
+    val startDestination = remember { if (sessionActive) Screen.FRIENDS else Screen.LOGIN }
+    // Never pop the last back stack entry. An empty back stack leaves the
+    // NavHost with nothing to draw, which shows up as a blank white window.
+    val goBack: () -> Unit = { navController.navigateUp() }
 
     // Any session loss (logout / token expiry) returns to the login screen.
     LaunchedEffect(sessionActive) {
@@ -54,19 +69,41 @@ fun AppRoot() {
             navController.navigate(Screen.LOGIN) {
                 popUpTo(0) { inclusive = true }
             }
+        } else {
+            // Restart the real-time monitor once the UI is actually visible
+            // (avoids starting a foreground service from Application.onCreate,
+            // which Android can reject while the process is still cold).
+            app.ensureMonitorRunning()
+            // Silent GitHub update check (at most once per hour).
+            app.updateCenter.checkSilently()
         }
     }
 
     CrashNoticeDialog()
+    UpdateNoticeDialog()
 
     NavHost(
         navController = navController,
-        startDestination = if (sessionActive) Screen.FRIENDS else Screen.LOGIN,
+        startDestination = startDestination,
+        // Opaque themed background: without it the activity's (white) window
+        // background shows through whenever a destination is not drawn yet.
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background),
+        // Transitions are disabled on purpose. navigation-compose 2.8 animates
+        // destination changes, and an interrupted transition can leave the new
+        // screen half-composed (a blank window, no crash logged). Instant
+        // switches remove that whole failure mode.
+        enterTransition = { EnterTransition.None },
+        exitTransition = { ExitTransition.None },
+        popEnterTransition = { EnterTransition.None },
+        popExitTransition = { ExitTransition.None },
     ) {
         composable(Screen.LOGIN) {
             LoginScreen(
                 onLoggedIn = {
                     navController.navigate(Screen.FRIENDS) {
+                        launchSingleTop = true
                         popUpTo(0) { inclusive = true }
                     }
                 }
@@ -74,28 +111,73 @@ fun AppRoot() {
         }
         composable(Screen.FRIENDS) {
             FriendsScreen(
-                onOpenFriend = { id -> navController.navigate(Screen.friend(id)) },
-                onOpenSettings = { navController.navigate(Screen.SETTINGS) },
-                onOpenHistory = { navController.navigate(Screen.HISTORY) },
+                onOpenFriend = { id -> navController.navigate(Screen.friend(id)) { launchSingleTop = true } },
+                onOpenSettings = { navController.navigate(Screen.SETTINGS) { launchSingleTop = true } },
+                onOpenHistory = { navController.navigate(Screen.HISTORY) { launchSingleTop = true } },
+                onOpenOwnProfile = { navController.navigate(Screen.ME) { launchSingleTop = true } },
             )
         }
         composable("friend/{friendId}") { entry ->
             val friendId = entry.arguments?.getString("friendId").orEmpty()
             FriendDetailScreen(
                 friendId = friendId,
-                onBack = { navController.popBackStack() },
+                onBack = goBack,
+                onOpenFriend = { id -> navController.navigate(Screen.friend(id)) { launchSingleTop = true } },
             )
         }
         composable(Screen.SETTINGS) {
-            SettingsScreen(onBack = { navController.popBackStack() })
+            SettingsScreen(onBack = goBack)
         }
         composable(Screen.HISTORY) {
-            HistoryScreen(onBack = { navController.popBackStack() })
+            HistoryScreen(onBack = goBack)
+        }
+        composable(Screen.ME) {
+            OwnProfileScreen(onBack = goBack)
         }
     }
 }
 
 internal fun appFrom(context: Context): VrApp = context.applicationContext as VrApp
+
+/** Prompts to download a newer build found on GitHub (silent or manual check). */
+@Composable
+private fun UpdateNoticeDialog() {
+    val context = LocalContext.current
+    val app = context.applicationContext as VrApp
+    val info by app.updateCenter.prompt.collectAsState()
+    val update = info ?: return
+    AlertDialog(
+        onDismissRequest = { app.updateCenter.dismissPrompt() },
+        title = { Text("发现新版本 ${update.versionName}") },
+        text = {
+            Column {
+                Text(
+                    "当前版本：${app.updateCenter.currentVersionName} → 最新版本：${update.versionName}",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                if (!update.notes.isNullOrBlank()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        update.notes.trim().take(800),
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier
+                            .heightIn(max = 240.dp)
+                            .verticalScroll(rememberScrollState()),
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                app.updateCenter.openDownload(update)
+                app.updateCenter.dismissPrompt()
+            }) { Text("前往下载") }
+        },
+        dismissButton = {
+            TextButton(onClick = { app.updateCenter.dismissPrompt() }) { Text("稍后") }
+        },
+    )
+}
 
 /** Shows the stack trace saved by the global crash handler, once, with a
  *  copy button so the user can send it back for debugging. */
@@ -104,9 +186,14 @@ private fun CrashNoticeDialog() {
     val context = LocalContext.current
     val app = context.applicationContext as VrApp
     val crash = remember { app.settingsRepo.getCrashInfo() }
-    if (crash.isNullOrBlank()) return
+    var show by remember { mutableStateOf(!crash.isNullOrBlank()) }
+    fun dismiss() {
+        show = false
+        app.settingsRepo.clearCrashInfo()
+    }
+    if (!show || crash.isNullOrBlank()) return
     AlertDialog(
-        onDismissRequest = { app.settingsRepo.clearCrashInfo() },
+        onDismissRequest = { dismiss() },
         title = { Text("上次启动崩溃") },
         text = {
             Column {
@@ -133,7 +220,7 @@ private fun CrashNoticeDialog() {
             }) { Text("复制") }
         },
         dismissButton = {
-            TextButton(onClick = { app.settingsRepo.clearCrashInfo() }) { Text("知道了") }
+            TextButton(onClick = { dismiss() }) { Text("知道了") }
         },
     )
 }
