@@ -1,0 +1,48 @@
+name: Publish release
+
+# Every time update.json or a bundled APK changes, make sure a GitHub Release
+# exists for that version with the APK attached, so the APK can be downloaded
+# straight from the Releases page.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "update.json"
+      - "apk/**"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version from update.json
+        id: meta
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          meta = json.load(open("update.json", encoding="utf-8"))
+          print("version=" + meta["versionName"])
+          with open("RELEASE_NOTES.md", "w", encoding="utf-8") as fh:
+              fh.write(meta.get("notes", ""))
+          PY
+
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -e
+          APK="apk/VRChatFriendTracker-${VERSION}-debug.apk"
+          test -f "$APK" || { echo "missing $APK"; exit 1; }
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            gh release edit "$VERSION" --title "$VERSION" --notes-file RELEASE_NOTES.md
+          else
+            gh release create "$VERSION" --title "$VERSION" --notes-file RELEASE_NOTES.md --latest
+          fi
+          gh release upload "$VERSION" "$APK" --clobber
