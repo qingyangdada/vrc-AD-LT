@@ -1,0 +1,7 @@
+{
+  "versionName": "1.7.12",
+  "versionCode": 76,
+  "apkUrl": "https://raw.githubusercontent.com/qingyangdada/vrc-AD-LT/main/apk/VRChatFriendTracker-1.7.12-debug.apk",
+  "pageUrl": "https://github.com/qingyangdada/vrc-AD-LT",
+  "notes": "1.7.12：修改状态改为滑动式开关（4 档，颜色跟随滑块）；我的资料改用 /users/{id} 补全简介与在线状态，并显示接口原始值方便排查离线误判。"
+}
