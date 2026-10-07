@@ -1,7 +1,7 @@
 {
-  "versionName": "1.7.14",
-  "versionCode": 78,
-  "apkUrl": "https://raw.githubusercontent.com/qingyangdada/vrc-AD-LT/main/apk/VRChatFriendTracker-1.7.14-debug.apk",
+  "versionName": "1.7.15",
+  "versionCode": 79,
+  "apkUrl": "https://raw.githubusercontent.com/qingyangdada/vrc-AD-LT/main/apk/VRChatFriendTracker-1.7.15-debug.apk",
   "pageUrl": "https://github.com/qingyangdada/vrc-AD-LT",
-  "notes": "1.7.14：修复改状态后页面变离线、简介被清空的问题（PUT /users/{id} 的返回体缺少 bio 且 presence 常为 offline，之前被整页覆盖）；改状态/改状态文字/改简介现在都改用本地更新+重新读取合并数据。"
+  "notes": "1.7.15：我的资料页去掉多余的状态/接口原始值诊断块，名字下方不再显示 usr 用户 ID（复制ID按钮保留）。"
 }
