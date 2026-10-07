@@ -1,7 +1,7 @@
 {
-  "versionName": "1.7.16",
-  "versionCode": 80,
-  "apkUrl": "https://github.com/qingyangdada/vrc-AD-LT/releases/download/1.7.16/VRChatFriendTracker-1.7.16-debug.apk",
+  "versionName": "1.7.17",
+  "versionCode": 81,
+  "apkUrl": "https://github.com/qingyangdada/vrc-AD-LT/releases/download/1.7.17/VRChatFriendTracker-1.7.17-debug.apk",
   "pageUrl": "https://github.com/qingyangdada/vrc-AD-LT/releases",
-  "notes": "1.7.16：我的资料新增「人称代词」显示与修改入口（读取 /profile/{userId}，写入 PUT /users/{id} 的 pronouns 字段，最多 32 字符，留空即清除）。"
+  "notes": "1.7.17：人称代词移到名字/状态下面显示（带「修改」入口）；去掉右侧信任等级徽章，靠名字颜色区分即可。"
 }
