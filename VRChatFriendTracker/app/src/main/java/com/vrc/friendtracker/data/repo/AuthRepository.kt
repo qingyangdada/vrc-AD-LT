@@ -6,6 +6,7 @@ import com.vrc.friendtracker.data.api.VrChatApiService
 import com.vrc.friendtracker.data.api.dto.ApiErrorBody
 import com.vrc.friendtracker.data.api.dto.TwoFactorAuthCode
 import com.vrc.friendtracker.data.api.dto.UserDto
+import com.vrc.friendtracker.data.db.HistoryDao
 import com.vrc.friendtracker.data.security.TokenStore
 import retrofit2.HttpException
 import java.net.URLEncoder
@@ -20,6 +21,7 @@ class AuthRepository(
     private val api: VrChatApiService,
     private val tokenStore: TokenStore,
     private val settingsRepo: SettingsRepo,
+    private val historyDao: HistoryDao,
 ) {
 
     /** In-memory only; never persisted. Used to finish the login after 2FA. */
@@ -123,8 +125,13 @@ class AuthRepository(
         } catch (_: Exception) {
             // Ignore network errors; the local session is cleared regardless.
         }
+        // History is kept across logins, so park the notification cursor at the
+        // newest event before prefs are wiped: otherwise the next login would
+        // re-deliver every recent event as a brand new notification.
+        val maxEventId = runCatching { historyDao.maxId() }.getOrDefault(0L)
         tokenStore.clear()
         settingsRepo.clear()
+        settingsRepo.setNotifyCursor(maxEventId)
         pendingBasicAuth = null
         pendingMethod = null
     }

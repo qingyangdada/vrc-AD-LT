@@ -9,6 +9,10 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
 import android.net.Uri
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.core.content.ContextCompat
 import android.widget.Toast
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -65,8 +69,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.Menu
@@ -303,11 +305,29 @@ fun FriendsScreen(
     val offlineFriends = remember(filteredFriends) {
         filteredFriends.filter { !it.isOnline && !it.pinned }
     }
+
+    // Live status-light tallies for the top bar (blue Join Me friends are
+    // counted together with the green ones, exactly like the lights in-game).
+    val lampOnline = remember(friends) { friends.filter { it.isOnline } }
+    val lampGreen = remember(lampOnline) { lampOnline.count { Status.priority(it.status, true) <= 1 } }
+    val lampYellow = remember(lampOnline) { lampOnline.count { it.status == Status.ASK_ME } }
+    val lampRed = remember(lampOnline) { lampOnline.count { it.status == Status.BUSY } }
     var offlineExpanded by rememberSaveable { mutableStateOf(false) }
 
     // Room group sizes (2+ members get the left color bar and extra spacing).
     val groupSizes = remember(onlineFriends) {
         onlineFriends.groupingBy { groupKeyOf(it) }.eachCount()
+    }
+    // One colour per room group, handed out in list order so two different
+    // groups can never share a bar colour (the old world-id hash collided and
+    // gave several rooms the same colour).
+    val groupColors = remember(onlineFriends, groupSizes) {
+        val orderedKeys = LinkedHashSet<String>()
+        onlineFriends.forEach { friend ->
+            val key = groupKeyOf(friend)
+            if ((groupSizes[key] ?: 0) >= 2) orderedKeys.add(key)
+        }
+        orderedKeys.withIndex().associate { (index, key) -> key to roomGroupColor(index) }
     }
 
     // Real-time change notices ("张三 进入 世界A").
@@ -423,16 +443,24 @@ fun FriendsScreen(
                 },
                 title = {
                     Column {
-                        Text(mainTab.title, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            // The friends tab is headed by the logged-in user's
+                            // own name; the other tabs keep their own label.
+                            text = if (mainTab == MainTab.FRIENDS) (ownDisplayName ?: mainTab.title) else mainTab.title,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
                         if (mainTab == MainTab.FRIENDS) {
-                            Text(
-                                text = listOfNotNull(
-                                    ownDisplayName,
-                                    "在线 ${friends.count { it.isOnline }}/${friends.size}",
-                                ).joinToString(" · "),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = "在线 " + lampOnline.size + "/" + friends.size,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                )
+                                StatusLamps(green = lampGreen, yellow = lampYellow, red = lampRed)
+                            }
                         }
                     }
                 },
@@ -446,6 +474,8 @@ fun FriendsScreen(
                         }
                     }
                     SyncSpinner(vm.showSpinner)
+                    // The monitor light sits immediately left of the refresh key.
+                    MonitorToggleDot(app)
                     IconButton(onClick = vm::refresh) {
                         Icon(Icons.Default.Refresh, contentDescription = "刷新")
                     }
@@ -462,7 +492,6 @@ fun FriendsScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            MonitorStatusBar(app)
             SyncErrorBanner(vm.lastSyncError)
             if (friends.isEmpty()) {
                 EmptyFriends(vm)
@@ -574,6 +603,7 @@ fun FriendsScreen(
                         friendItems(
                             friends = visibleFriends,
                             groupSizes = groupSizes,
+                            groupColors = groupColors,
                             worlds = worlds,
                             isDark = isDark,
                             revealedFriendId = revealedFriendId,
@@ -596,6 +626,7 @@ fun FriendsScreen(
                                 friendItems(
                                     friends = offlineFriends,
                                     groupSizes = groupSizes,
+                                    groupColors = groupColors,
                                     worlds = worlds,
                                     isDark = isDark,
                                     revealedFriendId = revealedFriendId,
@@ -666,6 +697,7 @@ fun FriendsScreen(
 private fun LazyListScope.friendItems(
     friends: List<FriendEntity>,
     groupSizes: Map<String, Int>,
+    groupColors: Map<String, Color>,
     worlds: Map<String, WorldEntity>,
     isDark: Boolean,
     revealedFriendId: String?,
@@ -693,10 +725,9 @@ private fun LazyListScope.friendItems(
             // Remember the click lambda per friend so unchanged cards
             // can be skipped entirely on list re-emissions.
             val onClick = remember(friend.id) { { onOpenFriend(friend.id) } }
-            val barColor = remember(groupSizes, friend.id) {
-                if ((groupSizes[groupKeyOf(friend)] ?: 0) >= 2 &&
-                    friend.isOnline && !friend.worldId.isNullOrBlank()
-                ) roomColorFor(friend.worldId!!) else null
+            val barColor = remember(groupColors, friend.id) {
+                if (friend.isOnline && !friend.worldId.isNullOrBlank()) groupColors[groupKeyOf(friend)]
+                else null
             }
             val worldName = friend.worldId?.let { worlds[it]?.name }
             val onAction = remember(friend) { { onSetPinned(friend.id, !friend.pinned) } }
@@ -920,9 +951,21 @@ private fun FriendCard(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         fontWeight = FontWeight.Medium,
+                        // Keeps the pronouns / rank chip visible on long names.
+                        modifier = Modifier.weight(1f, fill = false),
                     )
+                    val pronouns = friend.pronouns?.trim()?.takeIf { it.isNotEmpty() }
+                    if (pronouns != null) {
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            pronouns,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                        )
+                    }
                     Spacer(Modifier.width(6.dp))
-                    RankChip(friend)
+                    RankChip(friend, isDark)
                 }
                 Spacer(Modifier.height(2.dp))
                 val status = remember(friend, worldName) { statusLine(friend, worldName) }
@@ -971,46 +1014,172 @@ private fun FriendCard(
 
 
 @Composable
-internal fun RankChip(friend: FriendEntity) {
+internal fun RankChip(friend: FriendEntity, isDark: Boolean = isSystemInDarkTheme()) {
     val rank = remember(friend.trustRank) {
         runCatching { TrustRank.valueOf(friend.trustRank) }.getOrDefault(TrustRank.VISITOR)
     }
+    // The rank label follows the trust rank colour (User green / Known User
+    // yellow / Trusted User purple) so it always matches the friend's name
+    // colour instead of sitting in a fixed grey chip.
+    val rankColor = trustNameColor(rank, isDark)
     Surface(
         shape = RoundedCornerShape(4.dp),
-        color = MaterialTheme.colorScheme.secondaryContainer,
+        color = if (rankColor == Color.Unspecified) MaterialTheme.colorScheme.surfaceVariant else rankColor.copy(alpha = 0.18f),
     ) {
         Text(
             text = rank.en,
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSecondaryContainer,
+            color = if (rankColor == Color.Unspecified) MaterialTheme.colorScheme.onSurfaceVariant else rankColor,
             modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp),
         )
     }
 }
 
-/** High-contrast palette: hues spread far apart so rooms are easy to tell
- *  apart. Avoids the VRChat status light hues (green/blue/yellow/red/grey). */
+/**
+ * Real-time monitor light sitting next to the refresh button. While the
+ * monitor is off the dot is painted in the top bar's own colour, so it is
+ * invisible; once the background monitor runs it lights up green (with a soft
+ * halo). Tapping it turns the monitor on/off.
+ */
+@Composable
+private fun MonitorToggleDot(app: VrApp) {
+    val context = LocalContext.current
+    val enabled by app.settingsRepo.monitorEnabled.collectAsState()
+    var pendingOn by remember { mutableStateOf(false) }
+
+    fun enable() {
+        app.settingsRepo.setMonitorEnabled(true)
+        val started = app.startMonitorService()
+        Toast.makeText(
+            context,
+            if (started) "实时监控已开启：通知栏将常驻，好友上下线/换房会提醒"
+            else "实时监控开启失败：请先在系统设置中允许本应用后台运行",
+            if (started) Toast.LENGTH_SHORT else Toast.LENGTH_LONG,
+        ).show()
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted && pendingOn) {
+            enable()
+        } else if (pendingOn) {
+            Toast.makeText(context, "未授予通知权限，无法开启实时监控", Toast.LENGTH_SHORT).show()
+        }
+        pendingOn = false
+    }
+
+    Box(
+        modifier = Modifier
+            .size(38.dp)
+            .clip(CircleShape)
+            .clickable {
+                if (enabled) {
+                    app.settingsRepo.setMonitorEnabled(false)
+                    app.stopMonitorService()
+                    Toast.makeText(context, "实时监控已关闭", Toast.LENGTH_SHORT).show()
+                } else {
+                    val needPermission = Build.VERSION.SDK_INT >= 33 &&
+                        ContextCompat.checkSelfPermission(
+                            context, Manifest.permission.POST_NOTIFICATIONS,
+                        ) != PackageManager.PERMISSION_GRANTED
+                    if (needPermission) {
+                        pendingOn = true
+                        permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    } else {
+                        enable()
+                    }
+                }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        if (enabled) {
+            Box(
+                modifier = Modifier
+                    .size(18.dp)
+                    .clip(CircleShape)
+                    .background(Status.color(Status.ACTIVE, true).copy(alpha = 0.28f)),
+            )
+        }
+        Box(
+            modifier = Modifier
+                .size(if (enabled) 10.dp else 9.dp)
+                .clip(CircleShape)
+                .background(if (enabled) Status.color(Status.ACTIVE, true) else MaterialTheme.colorScheme.surface),
+        )
+    }
+}
+
+/** Green / yellow / red friend counts shown next to the online count. */
+@Composable
+private fun StatusLamps(green: Int, yellow: Int, red: Int) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.padding(start = 8.dp),
+    ) {
+        LampDot(Status.color(Status.ACTIVE, true), green)
+        Spacer(Modifier.width(6.dp))
+        LampDot(Status.color(Status.ASK_ME, true), yellow)
+        Spacer(Modifier.width(6.dp))
+        LampDot(Status.color(Status.BUSY, true), red)
+    }
+}
+
+@Composable
+private fun LampDot(color: Color, count: Int) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier
+                .size(6.dp)
+                .clip(CircleShape)
+                .background(color),
+        )
+        Spacer(Modifier.width(2.dp))
+        Text(
+            text = count.toString(),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/**
+ * Colours handed out to room groups, one per group in list order. The order is
+ * chosen so the first few groups (the common case) get hues as far apart as
+ * possible, and no entry repeats a VRChat status light hue (green / blue /
+ * yellow / red / grey).
+ */
 private val ROOM_PALETTE = listOf(
-    Color(0xFFFB8C00), // orange
-    Color(0xFFE65100), // deep orange
-    Color(0xFF00ACC1), // cyan
+    Color(0xFFF57C00), // orange
+    Color(0xFF3949AB), // indigo
     Color(0xFF00897B), // teal
-    Color(0xFF8E24AA), // purple
-    Color(0xFF7B1FA2), // deep purple
     Color(0xFFD81B60), // pink
     Color(0xFF6D4C41), // brown
+    Color(0xFF00BCD4), // cyan
+    Color(0xFF8E24AA), // purple
+    Color(0xFFAD1457), // magenta
+    Color(0xFF5E35B1), // deep purple
+    Color(0xFFE65100), // deep orange
+    Color(0xFF455A64), // blue grey
+    Color(0xFF546E7A), // slate
 )
+
+/**
+ * Colour for the n-th room group. The curated palette covers the usual case
+ * (a handful of groups, hues far apart); past it hues are generated on the fly
+ * so two different groups can never share the same bar colour.
+ */
+private fun roomGroupColor(index: Int): Color =
+    if (index < ROOM_PALETTE.size) {
+        ROOM_PALETTE[index]
+    } else {
+        Color.hsv(((index - ROOM_PALETTE.size + 1) * 137.508f + 20f) % 360f, 0.62f, 0.74f)
+    }
 
 /** Cluster key: room mates share a key; anyone not in a room is its own solo group. */
 private fun groupKeyOf(friend: FriendEntity): String =
     InstanceUtil.roomGroupKey(friend.isOnline, friend.worldId, friend.instanceId)
         ?: "solo:${friend.id}"
-/** Stable color per world id, so friends in the same room share a bar color. */
-private fun roomColorFor(worldId: String): Color {
-    val index = Math.floorMod(worldId.hashCode(), ROOM_PALETTE.size)
-    return ROOM_PALETTE[index]
-}
-
 private fun statusLine(friend: FriendEntity, worldName: String?): String {
     if (!friend.isOnline) {
         val lastSeen = friend.lastActivity?.let(TimeUtil::parseIsoToEpoch)
@@ -1020,8 +1189,13 @@ private fun statusLine(friend: FriendEntity, worldName: String?): String {
     val prefix = Status.label(friend.status, true)
     val parts = InstanceUtil.parseLocation(friend.location)
     return when (parts.kind) {
-        InstanceUtil.LocationParts.Kind.ONLINE_WORLD ->
-            "$prefix · ${worldName ?: friend.worldId ?: "未知世界"}"
+        InstanceUtil.LocationParts.Kind.ONLINE_WORLD -> {
+            val world = worldName ?: friend.worldId ?: "未知世界"
+            // Real access type of the instance; "公开" is the default and stays
+            // implicit so the common case keeps the line short.
+            val access = InstanceUtil.instanceTypeLabel(parts.instanceId)
+            if (access == "公开") "$prefix · $world" else "$prefix · $world · $access"
+        }
         InstanceUtil.LocationParts.Kind.PRIVATE -> "$prefix · 私密房间"
         InstanceUtil.LocationParts.Kind.TRAVELING -> "$prefix · 传送中"
         InstanceUtil.LocationParts.Kind.LOCAL -> "$prefix · 本地"
@@ -2038,43 +2212,5 @@ private fun WorldDetailSheet(world: WorldDto, onDismiss: () -> Unit) {
                 }
             }
         }
-    }
-}
-
-
-/** Slim status bar shown on the friends tab while the real-time monitor
- *  master switch is on: lets the user see at a glance whether the background
- *  service is actually running. */
-@Composable
-private fun MonitorStatusBar(app: VrApp) {
-    val monitorEnabled by app.settingsRepo.monitorEnabled.collectAsState()
-    val monitorRunning by app.monitorRunning.collectAsState()
-    if (!monitorEnabled) return
-    val running = monitorRunning
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(
-                if (running) MaterialTheme.colorScheme.primaryContainer
-                else MaterialTheme.colorScheme.errorContainer
-            )
-            .padding(horizontal = 12.dp, vertical = 5.dp),
-    ) {
-        Icon(
-            if (running) Icons.Default.CheckCircle else Icons.Default.Warning,
-            contentDescription = null,
-            modifier = Modifier.size(14.dp),
-            tint = if (running) MaterialTheme.colorScheme.onPrimaryContainer
-            else MaterialTheme.colorScheme.onErrorContainer,
-        )
-        Spacer(Modifier.width(6.dp))
-        Text(
-            if (running) "实时监控运行中 · 退到后台也能提醒（勿在最近任务划掉本应用）"
-            else "实时监控未运行：退到后台无法提醒，请到 设置 → 实时监控 重新开启",
-            style = MaterialTheme.typography.labelSmall,
-            color = if (running) MaterialTheme.colorScheme.onPrimaryContainer
-            else MaterialTheme.colorScheme.onErrorContainer,
-        )
     }
 }

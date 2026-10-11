@@ -19,6 +19,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import coil.compose.rememberAsyncImagePainter
+import coil.request.ImageRequest
 import com.vrc.friendtracker.VrApp
 import java.util.Collections
 import java.util.HashMap
@@ -69,10 +70,21 @@ fun UserAvatar(
     }
     // Painter-based loading avoids per-image subcomposition, the main
     // per-item overhead while scrolling. Letter stays underneath as the
-    // placeholder (loading off the UI thread via Coil).
+    // placeholder (loading off the UI thread via Coil). Once the bitmap is
+    // ready the letter is removed so the list never overdraws it under every
+    // avatar. Coil 2.7 refreshes these callbacks on every recomposition, so
+    // the closures always see the latest useFallback/target values.
+    var imageLoaded by remember(target) { mutableStateOf(false) }
+    // Bound the decode size: avatars display at 24-72dp, so 128px keeps
+    // quality on high-density screens while avoiding full-res decoding.
+    val request = remember(target) {
+        ImageRequest.Builder(app).data(target).size(128).build()
+    }
     val painter = rememberAsyncImagePainter(
-        model = target,
+        model = request,
+        onSuccess = { imageLoaded = true },
         onError = { error ->
+            imageLoaded = false
             if (!useFallback && hasFallback) {
                 useFallback = true
             } else {
@@ -97,7 +109,9 @@ fun UserAvatar(
         },
     )
     Box(modifier.clip(CircleShape)) {
-        LetterAvatar(name, Modifier.matchParentSize(), letterSize)
+        if (!imageLoaded) {
+            LetterAvatar(name, Modifier.matchParentSize(), letterSize)
+        }
         Image(
             painter = painter,
             contentDescription = null,

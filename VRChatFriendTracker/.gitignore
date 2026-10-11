@@ -1,0 +1,15 @@
+﻿# Gradle
+.gradle/
+build/
+# Local configuration file (sdk path, etc)
+local.properties
+# Android Studio / IntelliJ
+.idea/
+*.iml
+.DS_Store
+/captures
+.externalNativeBuild
+.cxx
+# Keystore files
+*.jks
+*.keystore

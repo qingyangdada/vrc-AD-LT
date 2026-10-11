@@ -3,6 +3,7 @@ package com.vrc.friendtracker.sync
 import com.vrc.friendtracker.data.api.VrChatApiService
 import com.vrc.friendtracker.data.api.dto.LimitedUserDto
 import com.vrc.friendtracker.data.api.dto.UserDto
+import com.vrc.friendtracker.data.api.dto.UserNoteDto
 import com.vrc.friendtracker.data.db.FriendDao
 import com.vrc.friendtracker.data.db.FriendEntity
 import com.vrc.friendtracker.data.db.HistoryDao
@@ -44,19 +45,77 @@ class SyncManager(
 ) {
 
     private val mutex = Mutex()
+    /** Short in-memory cooldown per friend/transition so VRChat presence
+     *  flapping (offline/online/room toggling within seconds) cannot produce
+     *  a burst of duplicate history events and duplicate alerts. */
+    private val flapCooldowns = HashMap<String, Long>()
+    private val EVENT_FLAP_MS = 60_000L
 
-    suspend fun syncOnce(light: Boolean = false): SyncOutcome {
+    /** Consecutive light polls a still-"online" friend was missing from the
+     *  online list. Two misses are required before flipping them offline so a
+     *  single partial/flaky response cannot produce a false "went offline". */
+    private val missingOnlineStreak = HashMap<String, Int>()
+    private val MISSING_OFFLINE_STRIKES = 2
+
+    /** The 5s poll stays cheap (friends list only), but every
+     *  [PROFILE_BACKFILL_EVERY_TICKS] cycles a few profiles (2 requests each)
+     *  are fetched in the background, so missing avatars, bios and pronouns of
+     *  the whole friend list fill in without a manual refresh. */
+    private val PROFILE_BACKFILL_EVERY_TICKS = 12
+    private val PROFILE_BACKFILL_BATCH = 5
+    private var lightTicks = 0
+
+    suspend fun syncOnce(light: Boolean = false, forceOffline: Boolean = false): SyncOutcome {
         if (tokenStore.authToken == null) {
             settingsRepo.logDiagnostic("SYNC", "无 auth token，判定会话失效")
             return SyncOutcome.AuthExpired
         }
-        return mutex.withLock {
+        return runHandled { performSync(light = light, forceOffline = forceOffline) }
+    }
+
+    /** Cheap tick for the real-time monitor service: online-friends list plus
+     *  a profile confirm for reminder-enabled friends that just left the list
+     *  (so their "went offline" change is recorded immediately). */
+    suspend fun syncMonitorTick(): SyncOutcome {
+        if (tokenStore.authToken == null) {
+            settingsRepo.logDiagnostic("SYNC", "无 auth token，判定会话失效")
+            return SyncOutcome.AuthExpired
+        }
+        return runHandled {
+            val online = fetchAllFriends(offline = false)
+            val onlineIds = HashSet<String>()
+            for (dto in online) {
+                onlineIds.add(dto.id)
+                applySnapshot(Snapshot.fromLimited(dto), tagsAuthoritative = false)
+            }
+            val watched = friendDao.getWatched()
+            for (friend in watched) {
+                if (friend.isOnline && friend.id !in onlineIds) {
+                    try {
+                        fetchAndApplyProfile(friend.id)
+                    } catch (e: HttpException) {
+                        if (e.code() == 401) throw e
+                    } catch (_: Exception) {
+                        // transient error; retried on the next tick
+                    }
+                }
+            }
+            // Keep world names fresh so background alerts show readable room
+            // names instead of raw world/instance ids (no-op when cached).
+            refreshWorlds(limit = 5)
+            0
+        }
+    }
+
+    /** Shared result handling for every sync flavour. */
+    private suspend fun runHandled(block: suspend () -> Int): SyncOutcome =
+        mutex.withLock {
             try {
-                val changeCount = performSync(light = light)
+                block()
                 val count = friendDao.count()
                 settingsRepo.setLastSyncAt(System.currentTimeMillis())
                 settingsRepo.setLastSyncError(null)
-                SyncOutcome.Done(count, changeCount)
+                SyncOutcome.Done(count, 0)
             } catch (e: HttpException) {
                 val url = e.response()?.raw()?.request?.url?.toString() ?: "?"
                 settingsRepo.logDiagnostic("SYNC", "HTTP ${e.code()} on $url")
@@ -80,52 +139,199 @@ class SyncManager(
                 SyncOutcome.Failed("网络错误：${e.message ?: "未知"}")
             }
         }
-    }
 
     /** Refreshes a single friend's full profile (used from the detail screen). */
     suspend fun refreshFriend(friendId: String) {
         if (tokenStore.authToken == null) return
         mutex.withLock {
             try {
-                val user = api.getUser(friendId)
-                applySnapshot(Snapshot.fromFull(user), tagsAuthoritative = true)
-                val parts = InstanceUtil.parseLocation(user.location)
-                if (parts.worldId != null) {
-                    val cached = worldDao.getById(parts.worldId)
-                    if (cached == null) {
-                        try {
-                            val world = api.getWorld(parts.worldId)
-                            worldDao.upsert(toWorldEntity(world, System.currentTimeMillis()))
-                        } catch (_: HttpException) {
-                            // world fetch failed; detail screen will show raw id
-                        }
-                    }
-                }
+                fetchAndApplyProfile(friendId)
             } catch (_: Exception) {
                 // detail screen handles errors via its own state
             }
         }
     }
 
-    private suspend fun performSync(light: Boolean): Int {
+    /**
+     * VRChat keeps the bio on the public profile endpoint (/profile/{id}); the
+     * user object returned by /users/{id} carries no bio field at all. Every
+     * full-profile refresh therefore asks for the profile as well, and a failed
+     * lookup simply keeps the cached bio.
+     */
+    private suspend fun bioSnapshot(user: UserDto): Snapshot {
+        val base = Snapshot.fromFull(user)
+        val profile = try {
+            api.getProfile(user.id)
+        } catch (e: HttpException) {
+            if (e.code() == 401) throw e
+            null
+        } catch (_: Exception) {
+            null
+        } ?: return base
+        return base.copy(
+            bio = profile.bio ?: base.bio,
+            bioLinks = profile.bioLinks?.takeIf { it.isNotEmpty() } ?: base.bioLinks,
+            pronouns = profile.pronouns?.takeIf { it.isNotBlank() } ?: base.pronouns,
+            // Only this source may also clear a cached bio (an empty bio there
+            // means the friend really has none).
+            fromProfile = true,
+        )
+    }
+
+    /** Full-profile fetch for one friend, plus world-name cache fill. */
+    private suspend fun fetchAndApplyProfile(friendId: String) {
+        val user = api.getUser(friendId)
+        applySnapshot(bioSnapshot(user), tagsAuthoritative = true)
+        val parts = InstanceUtil.parseLocation(user.location)
+        if (parts.worldId != null) {
+            val cached = worldDao.getById(parts.worldId)
+            if (cached == null) {
+                try {
+                    val world = api.getWorld(parts.worldId)
+                    worldDao.upsert(toWorldEntity(world, System.currentTimeMillis()))
+                } catch (_: HttpException) {
+                    // world fetch failed; detail screen will show raw id
+                }
+            }
+        }
+    }
+
+    /** Keeps reminder-enabled friends fresh on every full sync, so their
+     *  online/offline/room changes are detected even after they leave the
+     *  friends-online list. */
+    private suspend fun refreshWatchedFriends() {
+        val watched = friendDao.getWatched()
+        if (watched.isEmpty()) return
+        for (friend in watched) {
+            try {
+                fetchAndApplyProfile(friend.id)
+            } catch (e: HttpException) {
+                if (e.code() == 401) throw e
+            } catch (_: Exception) {
+                // transient error; retried next cycle
+            }
+        }
+    }
+
+    private suspend fun performSync(light: Boolean, forceOffline: Boolean): Int {
         var changes = 0
         if (!light) {
             // Validate the session early so an expired token is detected fast.
             api.getCurrentUser()
         }
+        // Online friends stay real-time. Offline friends are only refreshed on
+        // a manual refresh (forceOffline), keeping the auto poll loop lean and
+        // the list free of churn.
         val online = fetchAllFriends(offline = false)
-        val offline = fetchAllFriends(offline = true)
+        val onlineIds = online.mapTo(HashSet()) { it.id }
         for (dto in online) changes += applySnapshot(Snapshot.fromLimited(dto), tagsAuthoritative = false)
-        for (dto in offline) changes += applySnapshot(Snapshot.fromLimited(dto), tagsAuthoritative = false)
+        if (forceOffline) {
+            val offline = fetchAllFriends(offline = true)
+            for (dto in offline) changes += applySnapshot(Snapshot.fromLimited(dto), tagsAuthoritative = false)
+        } else {
+            // Absence from the online list is the offline signal. Updating it
+            // locally keeps online/offline accurate at the 5s poll cadence
+            // without pulling the (much heavier) offline list every cycle.
+            changes += markMissingOffline(onlineIds)
+        }
         changes += refreshWorlds(limit = 5)
         if (!light) {
-            changes += refreshProfiles(limit = 20)
+            // Manual refresh: a bigger budget so the visible profile details
+            // (avatar / trust rank / bio) fill in with far fewer refreshes.
+            changes += refreshProfiles(limit = 40)
+            refreshWatchedFriends()
+            syncUserNotes()
             logAvatarStats()
             logInstanceStats()
+        } else {
+            lightTicks++
+            if (lightTicks % PROFILE_BACKFILL_EVERY_TICKS == 0) {
+                changes += refreshProfiles(limit = PROFILE_BACKFILL_BATCH)
+            }
         }
         return changes
     }
 
+    /** Flips friends we still store as online to offline once they have been
+     *  absent from the online list for [MISSING_OFFLINE_STRIKES] cycles. */
+    private suspend fun markMissingOffline(onlineIds: Set<String>): Int {
+        var changes = 0
+        for (friend in friendDao.getOnline()) {
+            if (friend.id in onlineIds) {
+                missingOnlineStreak.remove(friend.id)
+                continue
+            }
+            val streak = (missingOnlineStreak[friend.id] ?: 0) + 1
+            if (streak < MISSING_OFFLINE_STRIKES) {
+                missingOnlineStreak[friend.id] = streak
+                continue
+            }
+            missingOnlineStreak.remove(friend.id)
+            changes += applySnapshot(offlineSnapshot(friend), tagsAuthoritative = false)
+        }
+        return changes
+    }
+
+    /** Synthetic snapshot meaning "this friend is no longer online"; keeps all
+     *  other cached fields (name, avatar, bio) untouched. */
+    private fun offlineSnapshot(friend: FriendEntity) = Snapshot(
+        id = friend.id,
+        displayName = friend.displayName,
+        note = null,
+        avatarUrl = null,
+        avatarFallbackUrl = null,
+        bio = null,
+        bioLinks = null,
+        location = "offline",
+        status = null,
+        statusDescription = null,
+        lastLogin = null,
+        lastActivity = null,
+        lastPlatform = null,
+        tags = null,
+        developerType = null,
+    )
+
+    /** Pulls the logged-in user's private notes (备注) about their friends and
+     *  writes them onto the matching friend rows. A note that disappeared on
+     *  VRChat's side clears the local value. Failures (except an expired
+     *  session) are logged and ignored so they never stall the main sync. */
+    private suspend fun syncUserNotes() {
+        try {
+            val notes = mutableListOf<UserNoteDto>()
+            var offset = 0
+            while (true) {
+                val page = api.getUserNotes(offset = offset, number = 100)
+                notes += page
+                if (page.size < 100 || offset >= 900) break
+                offset += page.size
+            }
+            val byTarget = notes
+                .mapNotNull { n -> n.targetUserId?.let { id -> id to n.note?.trim()?.takeIf { it.isNotEmpty() } } }
+                .toMap()
+            var updated = 0
+            for (friend in friendDao.getAll()) {
+                val newNote = byTarget[friend.id]
+                if (friend.note != newNote) {
+                    friendDao.updateNote(friend.id, newNote)
+                    updated++
+                }
+            }
+            if (byTarget.size != lastNoteCount || updated > 0) {
+                lastNoteCount = byTarget.size
+                settingsRepo.logDiagnostic("SYNC", "NOTES: " + byTarget.size + " 条备注, 更新 " + updated)
+            }
+        } catch (e: HttpException) {
+            // Notes are optional decoration: even a 401 must never be treated
+            // as a session failure (that would kick the user to the login
+            // screen on every sync for an endpoint VRChat may not expose).
+            val errBody = try { e.response()?.errorBody()?.string()?.take(200) } catch (_: Exception) { null }
+            settingsRepo.logDiagnostic("SYNC", "NOTES: HTTP " + e.code() + (errBody?.takeIf { it.isNotBlank() }?.let { " body=" + it } ?: ""))
+        } catch (e: Exception) {
+            settingsRepo.logDiagnostic("SYNC", "NOTES: " + (e.message ?: e.javaClass.simpleName))
+        }
+    }
+    private var lastNoteCount = -1
     private var lastInstanceStats: String? = null
 
     /** Logs the access-type distribution of online friends' instance ids once
@@ -213,8 +419,11 @@ class SyncManager(
      *  A compact diagnostic line is logged while the backfill is running. */
     private suspend fun refreshProfiles(limit: Int): Int {
         val noAvatar = friendDao.getMissingAvatarProfiles(limit = limit)
-        val stale = friendDao.getStaleForProfileCheck(limit = limit - noAvatar.size)
-        val targets = (noAvatar + stale).distinctBy { it.id }
+        val rest = (limit - noAvatar.size).coerceAtLeast(0)
+        val never = if (rest > 0) friendDao.getNeverProfiled(limit = rest) else emptyList()
+        val staleBudget = rest - never.size
+        val stale = if (staleBudget > 0) friendDao.getStaleForProfileCheck(limit = staleBudget) else emptyList()
+        val targets = (noAvatar + never + stale).distinctBy { it.id }
         var changes = 0
         var fetched = 0
         var withAvatar = 0
@@ -222,7 +431,7 @@ class SyncManager(
             try {
                 val user = api.getUser(friend.id)
                 fetched++
-                val snap = Snapshot.fromFull(user)
+                val snap = bioSnapshot(user)
                 if (!snap.avatarUrl.isNullOrBlank()) withAvatar++
                 if (friend.avatarUrl.isNullOrBlank() && snap.avatarUrl.isNullOrBlank()) {
                     // The full profile really has no usable avatar URL; report
@@ -256,7 +465,13 @@ class SyncManager(
         val old = friendDao.getById(snap.id)
         val now = System.currentTimeMillis()
         val parts = InstanceUtil.parseLocation(snap.location)
-        val isOnline = parts.isOnline
+        // Location is authoritative: "private"/"traveling"/"local" must CLEAR
+        // the cached world id instead of keeping the stale one, otherwise every
+        // poll looks like another room change and repeats the same notification.
+        val hasLocation = snap.location != null
+        val isOnline = if (hasLocation) parts.isOnline else old?.isOnline ?: false
+        val newWorldId = if (hasLocation) parts.worldId else old?.worldId
+        val newInstanceId = if (hasLocation) parts.instanceId else old?.instanceId
 
         // Tags are only meaningful when they come from a full profile.
         val newTags = if (tagsAuthoritative && !snap.tags.isNullOrEmpty()) snap.tags else null
@@ -266,10 +481,15 @@ class SyncManager(
         val entity = FriendEntity(
             id = snap.id,
             displayName = snap.displayName.ifBlank { old?.displayName ?: snap.id },
+            note = snap.note?.takeIf { it.isNotBlank() } ?: old?.note,
             avatarUrl = snap.avatarUrl ?: old?.avatarUrl,
             avatarFallbackUrl = snap.avatarFallbackUrl ?: old?.avatarFallbackUrl,
-            bio = snap.bio ?: old?.bio,
+            // The lightweight friends list cannot see the real bio; a blank
+            // value from it must never wipe the text fetched from the profile.
+            bio = if (snap.fromProfile) snap.bio
+            else snap.bio?.takeIf { it.isNotBlank() } ?: old?.bio,
             bioLinksJson = snap.bioLinks?.takeIf { it.isNotEmpty() }?.let(::encodeList) ?: old?.bioLinksJson,
+            pronouns = snap.pronouns?.takeIf { it.isNotBlank() } ?: old?.pronouns,
             tagsJson = newTags?.let(::encodeList) ?: old?.tagsJson,
             trustRank = rank.name,
             isTroll = if (newTags != null) TrustRank.isTroll(newTags) else old?.isTroll ?: false,
@@ -278,15 +498,20 @@ class SyncManager(
             status = snap.status ?: old?.status,
             statusDescription = snap.statusDescription ?: old?.statusDescription,
             location = snap.location ?: old?.location,
-            worldId = parts.worldId ?: old?.worldId,
-            instanceId = parts.instanceId ?: old?.instanceId,
+            worldId = newWorldId,
+            instanceId = newInstanceId,
             isOnline = isOnline,
             lastLogin = snap.lastLogin ?: old?.lastLogin,
             lastActivity = snap.lastActivity ?: old?.lastActivity,
             lastPlatform = snap.lastPlatform ?: old?.lastPlatform,
             tagsCheckedAt = if (tagsAuthoritative) now else old?.tagsCheckedAt ?: 0L,
+            profileCheckedAt = if (snap.fromProfile) now else old?.profileCheckedAt ?: 0L,
             lastSeenAt = now,
             updatedAt = now,
+            // Pin state is user preference; never reset it during sync.
+            pinned = old?.pinned ?: false,
+            // Per-friend reminder flag is also a user preference; keep it.
+            notify = old?.notify ?: false,
         )
 
         // Light polls must not rewrite rows that did not change; that would
@@ -297,46 +522,50 @@ class SyncManager(
         if (old != null) {
             val snapBio = snap.bio
             if (snapBio != null && old.bio != snapBio) {
-                historyDao.insert(
-                    HistoryEventEntity(
-                        friendId = snap.id, type = HistoryType.BIO,
-                        oldValue = old.bio, newValue = snapBio, timestamp = now
-                    )
-                )
-                changes++
+                if (recordEvent(snap.id, HistoryType.BIO, old.bio, snapBio, now)) changes++
             }
             // Only record rank changes once real tags have been observed before
             // (avoids a fake "Visitor -> X" event on the first tag fetch).
             if (newTags != null && tagsWereKnownBefore && old.trustRank != rank.name) {
-                historyDao.insert(
-                    HistoryEventEntity(
-                        friendId = snap.id, type = HistoryType.RANK,
-                        oldValue = old.trustRank, newValue = rank.name, timestamp = now
-                    )
-                )
-                changes++
+                if (recordEvent(snap.id, HistoryType.RANK, old.trustRank, rank.name, now)) changes++
             }
             if (old.isOnline != isOnline) {
-                historyDao.insert(
-                    HistoryEventEntity(
-                        friendId = snap.id, type = HistoryType.STATUS,
-                        oldValue = old.isOnline.toStatusZh(), newValue = isOnline.toStatusZh(), timestamp = now
-                    )
-                )
-                changes++
+                if (recordEvent(snap.id, HistoryType.STATUS, old.isOnline.toStatusZh(), isOnline.toStatusZh(), now)) changes++
             }
-            if (old.isOnline && isOnline && old.worldId != parts.worldId) {
-                historyDao.insert(
-                    HistoryEventEntity(
-                        friendId = snap.id, type = HistoryType.ROOM,
-                        oldValue = old.worldId, newValue = parts.worldId, timestamp = now
-                    )
-                )
-                changes++
+            if (old.isOnline && isOnline && old.worldId != newWorldId) {
+                if (recordEvent(snap.id, HistoryType.ROOM, old.worldId, newWorldId, now)) changes++
             }
         }
         friendDao.upsert(entity)
         return changes
+    }
+
+    /** Inserts a history event unless the same transition (either direction)
+     *  for the same friend was recorded within the flap window. */
+    private suspend fun recordEvent(
+        friendId: String,
+        type: String,
+        oldValue: String?,
+        newValue: String?,
+        now: Long,
+    ): Boolean {
+        // Never store the same transition twice in a row: if the latest event
+        // for this friend/type has identical values it is the same change being
+        // re-detected (e.g. a stale comparison), not a new one.
+        val latest = historyDao.getLatestFor(friendId, type)
+        if (latest != null && latest.oldValue == oldValue && latest.newValue == newValue) return false
+        val key = friendId + "|" + type + "|" +
+            listOf(oldValue.orEmpty(), newValue.orEmpty()).sorted().joinToString("|")
+        val last = flapCooldowns[key] ?: 0L
+        if (now - last < EVENT_FLAP_MS) return false
+        flapCooldowns[key] = now
+        historyDao.insert(
+            HistoryEventEntity(
+                friendId = friendId, type = type,
+                oldValue = oldValue, newValue = newValue, timestamp = now
+            )
+        )
+        return true
     }
 
     private fun toWorldEntity(dto: com.vrc.friendtracker.data.api.dto.WorldDto, now: Long) = WorldEntity(
@@ -347,6 +576,9 @@ class SyncManager(
         authorName = dto.authorName,
         description = dto.description,
         updatedAt = now,
+        capacity = dto.capacity,
+        releaseStatus = dto.releaseStatus,
+        tags = dto.tags?.takeIf { it.isNotEmpty() }?.let(::encodeList),
     )
 
     private fun encodeList(items: List<String>): String =
@@ -355,10 +587,12 @@ class SyncManager(
     private fun FriendEntity.sameVisibleAs(other: FriendEntity): Boolean =
         id == other.id &&
         displayName == other.displayName &&
+        note == other.note &&
         avatarUrl == other.avatarUrl &&
         avatarFallbackUrl == other.avatarFallbackUrl &&
         bio == other.bio &&
         bioLinksJson == other.bioLinksJson &&
+        pronouns == other.pronouns &&
         tagsJson == other.tagsJson &&
         trustRank == other.trustRank &&
         isTroll == other.isTroll &&
@@ -382,6 +616,7 @@ class SyncManager(
     private data class Snapshot(
         val id: String,
         val displayName: String,
+        val note: String?,
         val avatarUrl: String?,
         val avatarFallbackUrl: String?,
         val bio: String?,
@@ -394,11 +629,16 @@ class SyncManager(
         val lastPlatform: String?,
         val tags: List<String>?,
         val developerType: String?,
+        val pronouns: String? = null,
+        /** True when this snapshot came from a public-profile fetch, the only
+         *  source that can also clear a cached bio. */
+        val fromProfile: Boolean = false,
     ) {
         companion object {
             fun fromLimited(dto: LimitedUserDto) = Snapshot(
                 id = dto.id,
                 displayName = dto.displayName,
+                note = dto.note?.takeIf { it.isNotBlank() },
                 // VRC+ profile picture (profilePicOverride) is the primary
                 // avatar; keep the model avatar (currentAvatar*) as fallback
                 // for when the VRC+ picture cannot be loaded.
@@ -420,11 +660,13 @@ class SyncManager(
                 lastPlatform = dto.lastPlatform,
                 tags = dto.tags,
                 developerType = dto.developerType,
+                pronouns = dto.pronouns,
             )
 
             fun fromFull(dto: UserDto) = Snapshot(
                 id = dto.id,
                 displayName = dto.displayName,
+                note = dto.note?.takeIf { it.isNotBlank() },
                 // VRC+ profile picture (profilePicOverride) is the primary
                 // avatar; keep the model avatar (currentAvatar*) as fallback
                 // for when the VRC+ picture cannot be loaded.
@@ -446,6 +688,7 @@ class SyncManager(
                 lastPlatform = dto.lastPlatform,
                 tags = dto.tags,
                 developerType = dto.developerType,
+                pronouns = dto.pronouns,
             )
         }
     }

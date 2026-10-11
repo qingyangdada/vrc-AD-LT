@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.stateIn
 
 class HistoryViewModel(private val app: VrApp) : ViewModel() {
@@ -46,4 +47,9 @@ class HistoryViewModel(private val app: VrApp) : ViewModel() {
                 )
             }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    /** Deletes every recorded change (clears the real-time feed). */
+    fun clearAll() {
+        viewModelScope.launch { db.historyDao().clearAll() }
+    }
 }

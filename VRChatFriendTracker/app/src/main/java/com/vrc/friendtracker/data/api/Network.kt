@@ -12,7 +12,7 @@ import java.util.concurrent.TimeUnit
 
 object Network {
     const val BASE_URL = "https://api.vrchat.cloud/api/1/"
-    const val USER_AGENT = "VRCFriendTracker/1.3.1 (personal friend tracker)"
+    const val USER_AGENT = "VRCFriendTracker/1.4.4 (personal friend tracker)"
 
     val json: Json = Json {
         ignoreUnknownKeys = true
@@ -110,6 +110,7 @@ object Network {
                 if (relevant && (path.endsWith("/auth/user") || path.contains("twofactor"))) {
                     ApiDiagnostics.log("HTTP ${response.code} ${request.method} ${path} ✓")
                 }
+                if (path.endsWith("/auth/user")) logAuthUserShape(response)
             } else {
                 val body = try {
                     response.peekBody(300).string().replace('\n', ' ').take(200)
@@ -120,6 +121,26 @@ object Network {
             }
         } catch (_: Exception) {
             // logging must never break requests
+        }
+    }
+
+    /**
+     * VRChat answers /auth/user with a reduced copy of the account: bio may be
+     * empty and presence may read "offline" while the game is running. Logging
+     * what the raw body actually contains makes that visible in 诊断信息.
+     */
+    private fun logAuthUserShape(response: Response) {
+        try {
+            val body = response.peekBody(16_384).string()
+            fun field(name: String): String? =
+                Regex("\"$name\"\\s*:\\s*\"([^\"]*)\"").find(body)?.groupValues?.get(1)
+            val bioLen = field("bio")?.length
+            ApiDiagnostics.log(
+                "AUTH/RAW: bio=${if (bioLen == null) "字段缺失" else "${bioLen}字"} · " +
+                    "location=${field("location") ?: "无"} · state=${field("state") ?: "无"}",
+            )
+        } catch (_: Exception) {
+            // diagnostics must never break requests
         }
     }
 }

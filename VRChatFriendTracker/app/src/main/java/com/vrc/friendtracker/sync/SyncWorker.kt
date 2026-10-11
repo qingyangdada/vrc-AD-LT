@@ -13,7 +13,11 @@ class SyncWorker(
     override suspend fun doWork(): Result {
         val app = com.vrc.friendtracker.VrApp.INSTANCE
         return when (app.syncManager.syncOnce()) {
-            is SyncOutcome.Done -> Result.success()
+            is SyncOutcome.Done -> {
+                // Background run: deliver any per-friend change notifications.
+                app.notifier.notifyWatchedChanges()
+                Result.success()
+            }
             SyncOutcome.AuthExpired -> Result.success()
             is SyncOutcome.Failed -> Result.retry()
         }

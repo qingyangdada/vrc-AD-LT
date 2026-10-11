@@ -1,6 +1,14 @@
 package com.vrc.friendtracker.ui.detail
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,6 +26,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.NotificationsNone
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
@@ -28,17 +40,23 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.core.content.ContextCompat
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
@@ -50,16 +68,22 @@ import com.vrc.friendtracker.data.db.WorldEntity
 import com.vrc.friendtracker.ui.AppViewModelFactory
 import com.vrc.friendtracker.ui.UserAvatar
 import com.vrc.friendtracker.ui.appFrom
+import com.vrc.friendtracker.ui.detail.FriendDetailViewModel.MutualState
 import com.vrc.friendtracker.ui.friends.RankChip
 import com.vrc.friendtracker.ui.friends.worldDisplayName
 import com.vrc.friendtracker.util.InstanceUtil
 import com.vrc.friendtracker.util.Status
 import com.vrc.friendtracker.util.TimeUtil
 import com.vrc.friendtracker.util.TrustRank
+import com.vrc.friendtracker.util.trustNameColor
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun FriendDetailScreen(friendId: String, onBack: () -> Unit) {
+fun FriendDetailScreen(
+    friendId: String,
+    onBack: () -> Unit,
+    onOpenFriend: (String) -> Unit,
+) {
     val app = appFrom(LocalContext.current)
     val vm: FriendDetailViewModel = viewModel(
         key = "friend_$friendId",
@@ -70,6 +94,55 @@ fun FriendDetailScreen(friendId: String, onBack: () -> Unit) {
     val worlds by vm.worlds.collectAsState()
     val instance by vm.instance.collectAsState()
     val refreshing by vm.refreshing.collectAsState()
+    val mutual by vm.mutual.collectAsState()
+    var mutualExpanded by remember { mutableStateOf(false) }
+    val nightMode by app.settingsRepo.darkMode.collectAsState()
+    val isDark = nightMode || isSystemInDarkTheme()
+    val context = LocalContext.current
+    var pendingNotifyEnable by remember { mutableStateOf(false) }
+    fun enableNotifyAndMonitor() {
+        vm.setNotify(true)
+        // A bell alone only alerts while the app is open; start the background
+        // real-time monitor automatically so the reminder also works after the
+        // app leaves the foreground.
+        if (!app.settingsRepo.monitorEnabled.value) {
+            app.settingsRepo.setMonitorEnabled(true)
+            val started = app.startMonitorService()
+            Toast.makeText(
+                context,
+                if (started) "已开启提醒，并自动启动后台实时监控（可在设置中关闭）"
+                else "提醒已开启，但后台实时监控启动失败：请在系统设置允许本应用后台运行",
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+    }
+    val notifPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted && pendingNotifyEnable) {
+            enableNotifyAndMonitor()
+        } else if (pendingNotifyEnable) {
+            Toast.makeText(context, "未授予通知权限，无法开启提醒", Toast.LENGTH_SHORT).show()
+        }
+        pendingNotifyEnable = false
+    }
+    fun toggleNotify() {
+        val current = friend ?: return
+        if (current.notify) {
+            vm.setNotify(false)
+            return
+        }
+        val needPermission = Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(
+                context, Manifest.permission.POST_NOTIFICATIONS
+            ) != PackageManager.PERMISSION_GRANTED
+        if (needPermission) {
+            pendingNotifyEnable = true
+            notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            enableNotifyAndMonitor()
+        }
+    }
 
     LaunchedEffect(Unit) { vm.refresh() }
 
@@ -83,6 +156,15 @@ fun FriendDetailScreen(friendId: String, onBack: () -> Unit) {
                     }
                 },
                 actions = {
+                    val watched = friend?.notify == true
+                    IconButton(onClick = { toggleNotify() }) {
+                        Icon(
+                            if (watched) Icons.Default.Notifications else Icons.Default.NotificationsNone,
+                            contentDescription = if (watched) "关闭提醒" else "开启提醒",
+                            tint = if (watched) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     if (refreshing) {
                         CircularProgressIndicator(
                             modifier = Modifier
@@ -111,9 +193,77 @@ fun FriendDetailScreen(friendId: String, onBack: () -> Unit) {
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                item { HeaderCard(current) }
+                item { HeaderCard(current, isDark) }
                 item { BioCard(current) }
                 item { RoomCard(current, worlds, instance) }
+                item {
+                    val loaded = mutual as? MutualState.Loaded
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { mutualExpanded = !mutualExpanded }
+                            .padding(top = 8.dp),
+                    ) {
+                        Text(
+                            if (loaded != null) "共同好友 (${loaded.friends.size})" else "共同好友",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Icon(
+                            if (mutualExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                            contentDescription = if (mutualExpanded) "收起共同好友" else "展开共同好友",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                if (mutualExpanded) {
+                when (val m = mutual) {
+                    MutualState.Loading -> item {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 8.dp),
+                        ) {
+                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(10.dp))
+                            Text(
+                                "正在获取共同好友…",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    is MutualState.Error -> item {
+                        Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+                            Text(
+                                m.message,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                            TextButton(onClick = vm::loadMutualFriends) { Text("重试") }
+                        }
+                    }
+                    is MutualState.Loaded -> {
+                        if (m.friends.isEmpty()) {
+                            item {
+                                Text(
+                                    "暂无共同好友",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(vertical = 8.dp),
+                                )
+                            }
+                        } else {
+                            items(m.friends, key = { "mutual_${it.id}" }) { f ->
+                                MutualFriendRow(friend = f, isDark = isDark, onClick = { onOpenFriend(f.id) })
+                            }
+                        }
+                    }
+                }
+                }
                 item {
                     Text(
                         "变化记录 (${history.size})",
@@ -135,13 +285,19 @@ fun FriendDetailScreen(friendId: String, onBack: () -> Unit) {
                         HistoryRow(event, worlds)
                     }
                 }
+
+
             }
         }
     }
 }
 
 @Composable
-private fun HeaderCard(friend: FriendEntity) {
+private fun HeaderCard(friend: FriendEntity, isDark: Boolean) {
+    val rank = remember(friend.trustRank) {
+        runCatching { TrustRank.valueOf(friend.trustRank) }.getOrDefault(TrustRank.VISITOR)
+    }
+    val nameColor = remember(rank, isDark) { trustNameColor(rank, isDark) }
     Card {
         Row(
             modifier = Modifier
@@ -160,11 +316,12 @@ private fun HeaderCard(friend: FriendEntity) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         friend.displayName,
+                        color = nameColor,
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.SemiBold,
                     )
                     Spacer(Modifier.width(8.dp))
-                    RankChip(friend)
+                    RankChip(friend, isDark)
                 }
                 Spacer(Modifier.height(4.dp))
                 Text(
@@ -172,6 +329,15 @@ private fun HeaderCard(friend: FriendEntity) {
                     style = MaterialTheme.typography.bodyMedium,
                     color = Status.color(friend.status, friend.isOnline),
                 )
+                val pronouns = friend.pronouns?.trim()?.takeIf { it.isNotEmpty() }
+                if (pronouns != null) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "人称代词 $pronouns",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Spacer(Modifier.height(4.dp))
                 Text(
                     detailMeta(friend),
@@ -201,15 +367,22 @@ private fun detailMeta(friend: FriendEntity): String {
 private fun BioCard(friend: FriendEntity) {
     Card {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {
-            Text("简介", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            val note = friend.note?.trim()?.takeIf { it.isNotEmpty() }
+            Text(
+                if (note != null) "备注" else "简介",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
             Spacer(Modifier.height(8.dp))
-            if (friend.bio.isNullOrBlank()) {
+            if (note != null) {
+                Text(note, style = MaterialTheme.typography.bodyMedium)
+            } else if (friend.bio.isNullOrBlank()) {
                 Text("（无简介）", color = MaterialTheme.colorScheme.onSurfaceVariant)
             } else {
                 Text(friend.bio, style = MaterialTheme.typography.bodyMedium)
             }
             val links = friend.bioLinksJson?.split('\u0001')?.filter { it.isNotBlank() }
-            if (!links.isNullOrEmpty()) {
+            if (note == null && !links.isNullOrEmpty()) {
                 Spacer(Modifier.height(8.dp))
                 Text(
                     "链接：\n${links.joinToString("\n")}",
@@ -341,5 +514,55 @@ private fun displayValue(type: String, value: String?, worlds: Map<String, World
         HistoryType.RANK -> runCatching { TrustRank.valueOf(value) }.getOrNull()?.en ?: value
         HistoryType.ROOM -> worldDisplayName(value, worlds)
         else -> value
+    }
+}
+
+@Composable
+private fun MutualFriendRow(friend: FriendEntity, isDark: Boolean, onClick: () -> Unit) {
+    val rank = remember(friend.trustRank) {
+        runCatching { TrustRank.valueOf(friend.trustRank) }.getOrDefault(TrustRank.VISITOR)
+    }
+    val nameColor = remember(rank, isDark) { trustNameColor(rank, isDark) }
+    Card(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            UserAvatar(
+                friend.avatarUrl,
+                friend.displayName,
+                Modifier.size(40.dp),
+                fallbackUrl = friend.avatarFallbackUrl,
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        friend.displayName,
+                        color = nameColor,
+                        style = MaterialTheme.typography.titleSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    RankChip(friend, isDark)
+                }
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    Status.label(friend.status, friend.isOnline),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Box(
+                modifier = Modifier
+                    .size(10.dp)
+                    .clip(CircleShape)
+                    .background(Status.color(friend.status, friend.isOnline)),
+            )
+        }
     }
 }

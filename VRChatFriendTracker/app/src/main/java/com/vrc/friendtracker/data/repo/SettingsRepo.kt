@@ -37,10 +37,33 @@ class SettingsRepo(context: Context) {
     )
     val failedImageHosts: StateFlow<Set<String>> = _failedImageHosts.asStateFlow()
 
+    /** Master switch for the WeChat-style real-time monitor (foreground service). */
+    private val _monitorEnabled = MutableStateFlow(prefs.getBoolean(KEY_MONITOR_ENABLED, false))
+    val monitorEnabled: StateFlow<Boolean> = _monitorEnabled.asStateFlow()
+
+
+    /** Highest history-event id already turned into notifications. */
+    fun getNotifyCursor(): Long = prefs.getLong(KEY_NOTIFY_CURSOR, 0L)
+
+    fun setNotifyCursor(value: Long) {
+        prefs.edit().putLong(KEY_NOTIFY_CURSOR, value).apply()
+    }
+
+    /** Version the user chose to skip so the update prompt does not nag. */
+    fun getIgnoredUpdateVersion(): String? = prefs.getString(KEY_IGNORED_UPDATE, null)
+
+    fun setIgnoredUpdateVersion(value: String?) {
+        if (value == null) prefs.edit().remove(KEY_IGNORED_UPDATE).apply()
+        else prefs.edit().putString(KEY_IGNORED_UPDATE, value).apply()
+    }
 
     fun setDarkMode(enabled: Boolean) {
         prefs.edit().putBoolean(KEY_DARK_MODE, enabled).apply()
         _darkMode.value = enabled
+    }
+    fun setMonitorEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_MONITOR_ENABLED, enabled).apply()
+        _monitorEnabled.value = enabled
     }
     fun setLastSyncAt(value: Long) {
         prefs.edit().putLong(KEY_LAST_SYNC_AT, value).apply()
@@ -92,6 +115,7 @@ class SettingsRepo(context: Context) {
     fun clear() {
         prefs.edit().clear().apply()
         _darkMode.value = false
+        _monitorEnabled.value = false
         _lastSyncAt.value = 0L
         _lastSyncError.value = null
         _ownDisplayName.value = null
@@ -102,12 +126,15 @@ class SettingsRepo(context: Context) {
     companion object {
 
         const val KEY_DARK_MODE = "dark_mode"
+        const val KEY_MONITOR_ENABLED = "monitor_enabled"
         const val KEY_LAST_SYNC_AT = "last_sync_at"
         const val KEY_LAST_SYNC_ERROR = "last_sync_error"
         const val KEY_OWN_DISPLAY_NAME = "own_display_name"
         const val KEY_DIAGNOSTICS = "diagnostics"
         const val KEY_FAILED_IMAGE_HOSTS = "failed_image_hosts_v2"
         const val KEY_CRASH_INFO = "crash_info"
+        const val KEY_NOTIFY_CURSOR = "notify_cursor"
+        const val KEY_IGNORED_UPDATE = "ignored_update_version"
 
     }
 }

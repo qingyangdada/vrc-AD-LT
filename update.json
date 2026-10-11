@@ -1,7 +1,7 @@
 {
-  "versionName": "1.8.0",
-  "versionCode": 84,
-  "apkUrl": "https://github.com/qingyangdada/vrc-AD-LT/releases/download/1.8.0/VRChatFriendTracker-1.8.0-debug.apk",
+  "versionName": "1.8.1",
+  "versionCode": 91,
+  "apkUrl": "https://github.com/qingyangdada/vrc-AD-LT/releases/download/1.8.1/VRChatFriendTracker-1.8.1-debug.apk",
   "pageUrl": "https://github.com/qingyangdada/vrc-AD-LT/releases",
-  "notes": "1.8.0（修正版，安装包已同名替换）：修复进入「我的资料」返回主页后再点左上角三条横线会白屏的问题。定位为页面切换动画/抽屉动画被打断后界面停在半成品状态：现已关闭页面切换动画、给内容区铺上不透明主题底色（不再露出白色窗口背景）、抽屉状态改为单一数据源并限制偏移范围；返回键改用 navigateUp，避免返回栈被弹空导致空白窗口。若仍出现白屏，请在设置里复制日志反馈。"
+  "notes": "1.8.1 更新内容：\n1. 好友人称代词：好友卡片名字旁与详情页顶部显示人称代词（后台自动补齐）。\n2. 修复好友房间状态全部显示「私密」：现按 VRChat 官方实例标签解析，显示 私密／私密+／好友／好友+／群组／群组公开，公开房不显示后缀。\n3. 修复部分好友简介不显示：5 秒轻量同步不再清空已缓存的简介。\n4. 同房间标记：一组一个颜色，不同组不会重色；单人房不显示色条。\n5. 排序重做：同房间好友聚在一起，人数多的房间在上；人数相同则公开房在前；再按状态灯 蓝→绿→黄→红；然后是在线但不在世界的好友，离线最后。单人房不会再排到多人组上面。\n6. 名字后面的信任等级标签跟随等级变色（User 绿 / Known User 黄 / Trusted User 紫）。\n7. 顶部栏：标题改为自己的名字并显示在线数量；旁边三盏灯显示 绿=蓝灯+绿灯人数、黄=Ask Me、红=Busy。\n8. 后台实时监控开关移到顶部栏（刷新键左边）做成指示灯：关闭时与顶栏同色看不见，开启后亮绿灯；搜索栏上方多余的监控提示条已去掉。"
 }

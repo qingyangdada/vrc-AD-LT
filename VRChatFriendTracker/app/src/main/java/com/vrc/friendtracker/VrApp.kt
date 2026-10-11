@@ -2,15 +2,13 @@ package com.vrc.friendtracker
 
 import android.app.Application
 import android.content.Context
+import android.content.Intent
 import android.util.Log
-import androidx.work.Constraints
+import androidx.core.content.ContextCompat
 import coil.Coil
 import coil.ImageLoader
 import coil.disk.DiskCache
 import okhttp3.OkHttpClient
-import androidx.work.ExistingPeriodicWorkPolicy
-import androidx.work.NetworkType
-import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import com.vrc.friendtracker.data.api.Network
 import com.vrc.friendtracker.data.api.VrChatApiService
@@ -18,8 +16,10 @@ import com.vrc.friendtracker.data.db.AppDatabase
 import com.vrc.friendtracker.data.repo.AuthRepository
 import com.vrc.friendtracker.data.repo.SettingsRepo
 import com.vrc.friendtracker.data.security.TokenStore
+import com.vrc.friendtracker.sync.FriendNotifier
+import com.vrc.friendtracker.sync.MonitorService
 import com.vrc.friendtracker.sync.SyncManager
-import com.vrc.friendtracker.sync.SyncWorker
+import com.vrc.friendtracker.update.UpdateCenter
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -39,9 +39,23 @@ class VrApp : Application() {
         private set
     lateinit var syncManager: SyncManager
         private set
+    lateinit var notifier: FriendNotifier
+        private set
+    lateinit var updateCenter: UpdateCenter
+        private set
 
     private val _sessionActive = MutableStateFlow(false)
     val sessionActive: StateFlow<Boolean> = _sessionActive.asStateFlow()
+
+    private val _monitorRunning = MutableStateFlow(false)
+    val monitorRunning: StateFlow<Boolean> = _monitorRunning.asStateFlow()
+
+    /** Last time the in-app friend poll loop finished a cycle. The monitor
+     *  service skips its own network tick while this is fresh so background
+     *  monitoring never doubles the API request rate. */
+    @Volatile
+    var lastUiPollAt: Long = 0L
+        private set
 
     override fun onCreate() {
         super.onCreate()
@@ -51,7 +65,7 @@ class VrApp : Application() {
         settingsRepo = SettingsRepo(this)
         api = Network.createApi(tokenStore)
         database = AppDatabase.get(this)
-        authRepository = AuthRepository(api, tokenStore, settingsRepo)
+        authRepository = AuthRepository(api, tokenStore, settingsRepo, database.historyDao())
         syncManager = SyncManager(
             api,
             database.friendDao(),
@@ -60,9 +74,61 @@ class VrApp : Application() {
             settingsRepo,
             tokenStore,
         )
+        notifier = FriendNotifier(
+            this,
+            database.friendDao(),
+            database.historyDao(),
+            database.worldDao(),
+            settingsRepo,
+        )
         setupImageLoader()
+        updateCenter = UpdateCenter(this)
         _sessionActive.value = tokenStore.authToken != null
-        if (_sessionActive.value) schedulePeriodicSync()
+        // Drop the old 15-minute system fallback scheduled by previous builds;
+        // real-time is now the 5s foreground/monitor loop only.
+        WorkManager.getInstance(this).cancelUniqueWork(SYNC_WORK_NAME)
+    }
+
+    /** Keeps the real-time monitor (foreground service) alive as long as the
+     *  master switch is on. Called by the friends poll loop every cycle. */
+    fun touchUiPoll() {
+        lastUiPollAt = System.currentTimeMillis()
+    }
+
+    /** Starts the real-time monitor foreground service. Best-effort: Android
+     *  forbids background FGS starts on 12+, which this runCatching absorbs. */
+    fun startMonitorService(): Boolean {
+        if (!_sessionActive.value) {
+            _monitorRunning.value = false
+            return false
+        }
+        return try {
+            val intent = Intent(this, MonitorService::class.java)
+            ContextCompat.startForegroundService(this, intent)
+            true
+        } catch (e: Exception) {
+            _monitorRunning.value = false
+            settingsRepo.logDiagnostic(
+                "MON", "监控服务启动失败: " + (e.message ?: e.javaClass.simpleName)
+            )
+            false
+        }
+    }
+
+    /** Restarts the monitor (if enabled) when the main screen becomes visible. */
+    fun ensureMonitorRunning(): Boolean {
+        if (_sessionActive.value && settingsRepo.monitorEnabled.value) return startMonitorService()
+        return false
+    }
+
+    fun stopMonitorService() {
+        _monitorRunning.value = false
+        runCatching { stopService(Intent(this, MonitorService::class.java)) }
+    }
+
+    /** True while the foreground monitor service is actually alive. */
+    fun setMonitorRunning(running: Boolean) {
+        _monitorRunning.value = running
     }
 
     /**
@@ -139,24 +205,12 @@ class VrApp : Application() {
     }
     fun onLoginSuccess() {
         _sessionActive.value = true
-        schedulePeriodicSync()
+        ensureMonitorRunning()
     }
 
     fun onLogout() {
         _sessionActive.value = false
-        cancelPeriodicSync()
-    }
-
-    fun schedulePeriodicSync() {
-        val request = PeriodicWorkRequestBuilder<SyncWorker>(15, TimeUnit.MINUTES)
-            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
-            .build()
-        WorkManager.getInstance(this)
-            .enqueueUniquePeriodicWork(SYNC_WORK_NAME, ExistingPeriodicWorkPolicy.KEEP, request)
-    }
-
-    fun cancelPeriodicSync() {
-        WorkManager.getInstance(this).cancelUniqueWork(SYNC_WORK_NAME)
+        stopMonitorService()
     }
 
     companion object {
