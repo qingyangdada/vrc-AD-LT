@@ -365,24 +365,41 @@ private fun detailMeta(friend: FriendEntity): String {
 
 @Composable
 private fun BioCard(friend: FriendEntity) {
+    val note = friend.note?.trim()?.takeIf { it.isNotEmpty() }
+    val bio = friend.bio?.trim()?.takeIf { it.isNotEmpty() }
+    val links = friend.bioLinksJson?.split('\u0001')?.filter { it.isNotBlank() }
     Card {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {
-            val note = friend.note?.trim()?.takeIf { it.isNotEmpty() }
-            Text(
-                if (note != null) "备注" else "简介",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Spacer(Modifier.height(8.dp))
+            // A private note no longer replaces the bio: both sections are
+            // rendered, note first (it is the more personal one).
             if (note != null) {
+                Text(
+                    "备注",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(Modifier.height(8.dp))
                 Text(note, style = MaterialTheme.typography.bodyMedium)
-            } else if (friend.bio.isNullOrBlank()) {
-                Text("（无简介）", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            } else {
-                Text(friend.bio, style = MaterialTheme.typography.bodyMedium)
+                if (bio != null || !links.isNullOrEmpty()) Spacer(Modifier.height(16.dp))
             }
-            val links = friend.bioLinksJson?.split('\u0001')?.filter { it.isNotBlank() }
-            if (note == null && !links.isNullOrEmpty()) {
+            if (bio != null) {
+                Text(
+                    "简介",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(bio, style = MaterialTheme.typography.bodyMedium)
+            } else if (note == null) {
+                Text(
+                    "简介",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(Modifier.height(8.dp))
+                Text("（无简介）", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (!links.isNullOrEmpty()) {
                 Spacer(Modifier.height(8.dp))
                 Text(
                     "链接：\n${links.joinToString("\n")}",

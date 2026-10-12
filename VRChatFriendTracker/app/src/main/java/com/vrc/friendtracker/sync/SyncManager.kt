@@ -142,14 +142,30 @@ class SyncManager(
 
     /** Refreshes a single friend's full profile (used from the detail screen). */
     suspend fun refreshFriend(friendId: String) {
-        if (tokenStore.authToken == null) return
+        if (tokenStore.authToken == null) {
+            settingsRepo.logDiagnostic("SYNC", "PROFILE: 会话失效，无法刷新好友资料")
+            return
+        }
         mutex.withLock {
             try {
                 fetchAndApplyProfile(friendId)
-            } catch (_: Exception) {
-                // detail screen handles errors via its own state
+            } catch (e: HttpException) {
+                if (e.code() == 401) throw e
+                settingsRepo.logDiagnostic("SYNC", "PROFILE: 刷新好友资料失败 HTTP " + e.code())
+            } catch (e: Exception) {
+                // Logged instead of swallowed so "刷新没用" is diagnosable.
+                settingsRepo.logDiagnostic("SYNC", "PROFILE: 刷新好友资料失败 " + (e.message ?: e.javaClass.simpleName))
             }
         }
+        val refreshed = friendDao.getById(friendId)
+        val refreshedBio = refreshed?.bio
+        val refreshedNote = refreshed?.note
+        val bioState = if (refreshedBio.isNullOrBlank()) "为空" else refreshedBio.length.toString() + " 字"
+        val noteState = if (refreshedNote.isNullOrBlank()) "" else "，备注 " + refreshedNote.length.toString() + " 字"
+        settingsRepo.logDiagnostic(
+            "SYNC",
+            "PROFILE: " + (refreshed?.displayName ?: friendId) + " 刷新完成，简介 " + bioState + noteState,
+        )
     }
 
     /**
@@ -164,18 +180,34 @@ class SyncManager(
             api.getProfile(user.id)
         } catch (e: HttpException) {
             if (e.code() == 401) throw e
+            logProfileFailure(user, "HTTP " + e.code())
             null
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            logProfileFailure(user, e.javaClass.simpleName)
             null
         } ?: return base
+        profileFailLogged.remove(user.id)
         return base.copy(
-            bio = profile.bio ?: base.bio,
+            // VRChat answers /profile with an empty bio for some accounts; an
+            // empty string there must never wipe the bio /users/{id} returned,
+            // otherwise those friends keep showing "（无简介）" forever.
+            bio = profile.bio?.trim()?.takeIf { it.isNotEmpty() } ?: base.bio,
             bioLinks = profile.bioLinks?.takeIf { it.isNotEmpty() } ?: base.bioLinks,
             pronouns = profile.pronouns?.takeIf { it.isNotBlank() } ?: base.pronouns,
             // Only this source may also clear a cached bio (an empty bio there
             // means the friend really has none).
             fromProfile = true,
         )
+    }
+
+    /** Remembers the last profile failure per friend so a broken 简介 shows up
+     *  once in 诊断信息 instead of on every cycle. */
+    private val profileFailLogged = HashMap<String, String>()
+
+    private fun logProfileFailure(user: UserDto, reason: String) {
+        if (profileFailLogged[user.id] == reason) return
+        profileFailLogged[user.id] = reason
+        settingsRepo.logDiagnostic("SYNC", "PROFILE: " + user.displayName + " 简介接口失败 " + reason)
     }
 
     /** Full-profile fetch for one friend, plus world-name cache fill. */
@@ -421,9 +453,15 @@ class SyncManager(
         val noAvatar = friendDao.getMissingAvatarProfiles(limit = limit)
         val rest = (limit - noAvatar.size).coerceAtLeast(0)
         val never = if (rest > 0) friendDao.getNeverProfiled(limit = rest) else emptyList()
-        val staleBudget = rest - never.size
+        var staleBudget = rest - never.size
+        // One slot per cycle is reserved for friends whose bio is still empty
+        // so a bio that came back as an empty string is retried soon, without
+        // starving the trust-tag rotation of the remaining budget.
+        val bioBudget = if (staleBudget >= 2) 1 else 0
+        staleBudget -= bioBudget
+        val blankBio = if (bioBudget > 0) friendDao.getMissingBioProfiles(limit = bioBudget) else emptyList()
         val stale = if (staleBudget > 0) friendDao.getStaleForProfileCheck(limit = staleBudget) else emptyList()
-        val targets = (noAvatar + never + stale).distinctBy { it.id }
+        val targets = (noAvatar + never + blankBio + stale).distinctBy { it.id }
         var changes = 0
         var fetched = 0
         var withAvatar = 0

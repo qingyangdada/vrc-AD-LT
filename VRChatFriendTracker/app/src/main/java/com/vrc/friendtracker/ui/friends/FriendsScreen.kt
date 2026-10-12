@@ -57,6 +57,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -185,8 +186,13 @@ fun FriendsScreen(
     var tabName by rememberSaveable { mutableStateOf(MainTab.FRIENDS.name) }
     val mainTab = remember(tabName) { MainTab.valueOf(tabName) }
 
-    // Left half-screen drawer: the main content slides right together with it.
-    val drawerWidthDp = LocalConfiguration.current.screenWidthDp.dp / 2
+    // Left drawer: the main content slides right together with it. Slightly
+    // wider than half so the labels have room, but clamped so tablets do not
+    // get a slab and narrow phones keep a strip of the home page visible.
+    val screenWidthDp = LocalConfiguration.current.screenWidthDp.dp
+    val drawerWidthDp = (screenWidthDp * 0.62f)
+        .coerceIn(240.dp, 320.dp)
+        .coerceAtMost(screenWidthDp - 56.dp)
     val density = LocalDensity.current
     // Never zero: a zero-width panel would slide nothing while the content
     // still moves, which the user sees as a blank screen.
@@ -375,6 +381,14 @@ fun FriendsScreen(
                 onSelect = selectTab,
                 onOpenOwnProfile = { closeDrawer(); onOpenOwnProfile() },
                 isDark = isDark,
+            )
+            // Thin edge line so the panel reads as a separate surface.
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .width(1.dp)
+                    .fillMaxHeight()
+                    .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
             )
         }
         // Main content: follows the drawer and opens it on right-swipes.
@@ -962,6 +976,11 @@ private fun FriendCard(
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis,
+                            // Long pronouns used to push the rank chip off the
+                            // row; cap the width and ellipsize instead.
+                            modifier = Modifier.widthIn(max = 84.dp),
                         )
                     }
                     Spacer(Modifier.width(6.dp))
@@ -980,8 +999,10 @@ private fun FriendCard(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                // The friend's note (备注) takes this line (with a label) and hides the bio.
+                // The note (备注) keeps its own line but must not hide
+                // the bio any more: both are shown, note first.
                 val noteText = friend.note?.trim()?.takeIf { it.isNotEmpty() }
+                val bioText = bioSnippet(friend.bio)
                 if (noteText != null) {
                     Text(
                         text = "备注：$noteText",
@@ -990,9 +1011,10 @@ private fun FriendCard(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                } else if (!friend.bio.isNullOrBlank()) {
+                }
+                if (bioText != null) {
                     Text(
-                        text = friend.bio,
+                        text = bioText,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -1180,6 +1202,21 @@ private fun roomGroupColor(index: Int): Color =
 private fun groupKeyOf(friend: FriendEntity): String =
     InstanceUtil.roomGroupKey(friend.isOnline, friend.worldId, friend.instanceId)
         ?: "solo:${friend.id}"
+/** One visible line of a bio for the compact card snippet. Blank lines and
+ *  zero-width filler characters are skipped, otherwise a bio that starts
+ *  with them renders as an empty line and looks like "no bio". */
+private fun bioSnippet(bio: String?): String? {
+    val cleaned = bio
+        ?.replace("\u200b", "")
+        ?.replace("\u200c", "")
+        ?.replace("\u200d", "")
+        ?.replace("\ufeff", "")
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() }
+        ?: return null
+    return cleaned.lines().firstOrNull { it.isNotBlank() }?.trim()?.takeIf { it.isNotEmpty() }
+}
+
 private fun statusLine(friend: FriendEntity, worldName: String?): String {
     if (!friend.isOnline) {
         val lastSeen = friend.lastActivity?.let(TimeUtil::parseIsoToEpoch)
@@ -1266,31 +1303,42 @@ private fun DrawerPanel(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 20.dp)
-            .padding(top = LocalConfiguration.current.screenHeightDp.dp * 0.2f),
+            .padding(horizontal = 16.dp)
+            .padding(top = LocalConfiguration.current.screenHeightDp.dp * 0.2f, bottom = 16.dp),
     ) {
         Column(
             modifier = Modifier
-                .clip(RoundedCornerShape(12.dp))
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
                 .clickable { onOpenOwnProfile() }
-                .padding(6.dp),
+                .padding(horizontal = 8.dp, vertical = 8.dp),
         ) {
-            UserAvatar(ownAvatarUrl, ownDisplayName ?: "", Modifier.size(64.dp))
-            Spacer(Modifier.height(10.dp))
+            UserAvatar(ownAvatarUrl, ownDisplayName ?: "", Modifier.size(72.dp))
+            Spacer(Modifier.height(12.dp))
             Text(
                 ownDisplayName ?: "未登录",
-                style = MaterialTheme.typography.titleMedium,
+                style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 color = if (isDark) Color(0xFFF0F0F0) else MaterialTheme.colorScheme.onSurface,
             )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                "点击查看个人简介",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
-        Spacer(Modifier.height(28.dp))
-        DrawerItem(Icons.Default.People, "好友状态", selected == MainTab.FRIENDS) { onSelect(MainTab.FRIENDS) }
-        DrawerItem(Icons.Default.Star, "收藏", selected == MainTab.FAVORITES) { onSelect(MainTab.FAVORITES) }
-        DrawerItem(Icons.Default.Face, "个人模型", selected == MainTab.AVATARS) { onSelect(MainTab.AVATARS) }
-        DrawerItem(Icons.Default.PhotoCamera, "拍立得", selected == MainTab.PHOTOS) { onSelect(MainTab.PHOTOS) }
+        Spacer(Modifier.height(16.dp))
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+        Spacer(Modifier.height(12.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            DrawerItem(Icons.Default.People, "好友状态", selected == MainTab.FRIENDS) { onSelect(MainTab.FRIENDS) }
+            DrawerItem(Icons.Default.Star, "收藏", selected == MainTab.FAVORITES) { onSelect(MainTab.FAVORITES) }
+            DrawerItem(Icons.Default.Face, "个人模型", selected == MainTab.AVATARS) { onSelect(MainTab.AVATARS) }
+            DrawerItem(Icons.Default.PhotoCamera, "拍立得", selected == MainTab.PHOTOS) { onSelect(MainTab.PHOTOS) }
+        }
         Spacer(Modifier.weight(1f))
         Text(
             "向左滑动或按返回键关闭",
@@ -1310,21 +1358,23 @@ private fun DrawerItem(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
+            .clip(RoundedCornerShape(14.dp))
             .background(if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent)
             .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 12.dp),
+            .padding(horizontal = 14.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
             icon,
             contentDescription = null,
+            modifier = Modifier.size(24.dp),
             tint = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Spacer(Modifier.width(12.dp))
+        Spacer(Modifier.width(14.dp))
         Text(
             label,
             style = MaterialTheme.typography.bodyLarge,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
             color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
         )
     }

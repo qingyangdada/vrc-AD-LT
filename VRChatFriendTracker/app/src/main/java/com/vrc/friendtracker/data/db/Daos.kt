@@ -43,6 +43,11 @@ interface FriendDao {
     @Query("SELECT * FROM friends WHERE profileCheckedAt = 0 ORDER BY isOnline DESC, lastSeenAt DESC LIMIT :limit")
     suspend fun getNeverProfiled(limit: Int): List<FriendEntity>
 
+    /** Friends whose bio is still empty; retried first so a bio that VRChat
+     *  answered with an empty string does not stay blank forever. */
+    @Query("SELECT * FROM friends WHERE bio IS NULL OR bio = '' ORDER BY profileCheckedAt ASC LIMIT :limit")
+    suspend fun getMissingBioProfiles(limit: Int): List<FriendEntity>
+
 
 
     @Query("UPDATE friends SET pinned = :pinned WHERE id = :id")
