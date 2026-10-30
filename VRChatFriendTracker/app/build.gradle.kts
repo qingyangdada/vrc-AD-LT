@@ -14,8 +14,8 @@ android {
         applicationId = "com.vrc.friendtracker"
         minSdk = 26
         targetSdk = 35
-        versionCode = 95
-        versionName = "1.8.2"
+        versionCode = 111
+        versionName = "1.8.4"
     }
 
     buildTypes {

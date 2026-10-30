@@ -14,6 +14,7 @@ class SettingsViewModel(private val app: VrApp) : ViewModel() {
     val displayName: StateFlow<String?> = app.settingsRepo.ownDisplayName
 
     val darkMode: StateFlow<Boolean> = app.settingsRepo.darkMode
+    val friendCoverEnabled: StateFlow<Boolean> = app.settingsRepo.friendCoverEnabled
     val monitorEnabled: StateFlow<Boolean> = app.settingsRepo.monitorEnabled
     val lastSyncAt: StateFlow<Long> = app.settingsRepo.lastSyncAt
     val diagnostics: StateFlow<List<String>> = app.settingsRepo.diagnostics
@@ -33,6 +34,8 @@ class SettingsViewModel(private val app: VrApp) : ViewModel() {
     }
 
     fun setDarkMode(enabled: Boolean) = app.settingsRepo.setDarkMode(enabled)
+
+    fun setFriendCoverEnabled(enabled: Boolean) = app.settingsRepo.setFriendCoverEnabled(enabled)
 
     /** Master switch for the real-time monitor foreground service. */
     fun setMonitorEnabled(enabled: Boolean): Boolean {

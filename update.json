@@ -1,7 +1,7 @@
 {
-  "versionName": "1.8.2",
-  "versionCode": 95,
-  "apkUrl": "https://github.com/qingyangdada/vrc-AD-LT/releases/download/1.8.2/VRChatFriendTracker-1.8.2-debug.apk",
+  "versionName": "1.8.4",
+  "versionCode": 111,
+  "apkUrl": "https://github.com/qingyangdada/vrc-AD-LT/releases/download/1.8.4/VRChatFriendTracker-1.8.4-debug.apk",
   "pageUrl": "https://github.com/qingyangdada/vrc-AD-LT/releases",
-  "notes": "1.8.2 更新内容：\n1. 修复部分好友简介一直不显示：VRChat 对部分账号的 /profile 会返回空字符串，之前会把 /users 里已拿到的真实简介覆盖掉，现在不会再被清空；同步时还专门为「简介为空」的好友保留了重试名额。\n2. 好友卡片：备注和简介不再是二选一，有备注时下面照样显示简介片段（自动跳过开头的空行与零宽字符，避免看着像空白）。\n3. 好友详情页：「备注」和「简介」拆成两段，互不遮挡；右上角刷新会强制重新拉取该好友资料，日志会写明「简介 X 字，备注 X 字」，失败时给出 HTTP 原因。\n4. 人称代词过长不再把右边的等级标签顶出屏幕：代词宽度受限并显示省略号。\n5. 左侧抽屉菜单优化：宽度改为屏幕的 62%（夹取 240–320dp），头像放大到 72dp 并加一行「点击查看个人简介」提示，菜单项圆角/内边距/图标加大更好点，新增分线与面板右侧边线。\n6. 版本号：1.8.2（versionCode 95）。"
+  "notes": "1.8.4 更新内容：\n1. 移除「精神网络」功能：侧边栏入口、页面代码、数据模型与相关设置项全部删除。\n2. 好友卡片新增所在房间的地图封面：贴图铺满卡片右侧、左边缘斜切并从右往左淡出；可在「设置 → 外观 → 好友卡片显示房间封面」里开关，关闭后不再请求封面，滑动更省资源。\n3. 好友详情页「当前房间」可点击进入地图详情（与收藏共用同一套详情页），长按地图名即复制名称；详情页标题长按/点击也能复制地图名。\n4. 地图详情弹窗抽成公共组件 ui/WorldDetailSheet.kt，收藏与好友详情行为一致。\n5. 好友列表去掉名字后面的等级文字标签，信任等级仅通过名字颜色区分（白/绿/黄/紫），长名字更不容易被截断。\n6. 版本号：1.8.4（versionCode 111）。"
 }

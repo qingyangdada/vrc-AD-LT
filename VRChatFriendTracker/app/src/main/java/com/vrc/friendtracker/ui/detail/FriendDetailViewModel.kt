@@ -8,6 +8,8 @@ import com.vrc.friendtracker.data.api.dto.LimitedUserDto
 import com.vrc.friendtracker.data.db.FriendEntity
 import com.vrc.friendtracker.data.db.HistoryEventEntity
 import com.vrc.friendtracker.data.db.WorldEntity
+import com.vrc.friendtracker.ui.WorldDetailInfo
+import com.vrc.friendtracker.ui.toDetailInfo
 import com.vrc.friendtracker.util.InstanceUtil
 import com.vrc.friendtracker.util.TrustRank
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -38,6 +40,36 @@ class FriendDetailViewModel(
 
     private val _instance = MutableStateFlow<InstanceDto?>(null)
     val instance: StateFlow<InstanceDto?> = _instance.asStateFlow()
+
+    /** World sheet opened from the "当前房间" card. Cached data shows
+     *  immediately, then the full world record is fetched in the background. */
+    private val _worldDetail = MutableStateFlow<WorldDetailInfo?>(null)
+    val worldDetail: StateFlow<WorldDetailInfo?> = _worldDetail.asStateFlow()
+
+    fun openWorld(worldId: String) {
+        if (worldId.isBlank()) return
+        viewModelScope.launch {
+            val cached = try {
+                app.database.worldDao().getById(worldId)
+            } catch (_: Exception) {
+                null
+            }
+            if (_worldDetail.value == null) {
+                _worldDetail.value = cached?.toDetailInfo()
+                    ?: WorldDetailInfo(id = worldId, name = worldId)
+            }
+            try {
+                val dto = app.api.getWorld(worldId)
+                if (_worldDetail.value != null) _worldDetail.value = dto.toDetailInfo()
+            } catch (_: Exception) {
+                // Keep whatever the cache had; the sheet still shows the id.
+            }
+        }
+    }
+
+    fun closeWorld() {
+        _worldDetail.value = null
+    }
 
     private val _refreshing = MutableStateFlow(false)
     val refreshing: StateFlow<Boolean> = _refreshing.asStateFlow()

@@ -138,7 +138,10 @@ import com.vrc.friendtracker.data.db.FriendEntity
 import com.vrc.friendtracker.data.db.WorldEntity
 import com.vrc.friendtracker.ui.AppViewModelFactory
 import com.vrc.friendtracker.ui.UserAvatar
+import com.vrc.friendtracker.ui.WorldCoverBackdrop
 import com.vrc.friendtracker.ui.appFrom
+import com.vrc.friendtracker.ui.WorldDetailSheet
+import com.vrc.friendtracker.ui.toDetailInfo
 import com.vrc.friendtracker.VrApp
 import com.vrc.friendtracker.util.InstanceUtil
 import com.vrc.friendtracker.util.Status
@@ -175,6 +178,7 @@ fun FriendsScreen(
     val recentChanges by vm.recentChanges.collectAsState()
     val ownDisplayName by vm.ownDisplayName.collectAsState()
     val nightMode by app.settingsRepo.darkMode.collectAsState()
+    val friendCoverEnabled by app.settingsRepo.friendCoverEnabled.collectAsState()
     val isDark = nightMode || isSystemInDarkTheme()
 
     val ownAvatarUrl by vm.ownAvatarUrl.collectAsState()
@@ -399,7 +403,7 @@ fun FriendsScreen(
                 // Opaque themed background: the (white) activity window
                 // background can then never show through the content area.
                 .background(MaterialTheme.colorScheme.background)
-                .pointerInput(drawerWidthPx) {
+                .pointerInput(drawerWidthPx, mainTab) {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
                         var totalX = 0f
@@ -620,6 +624,7 @@ fun FriendsScreen(
                             groupColors = groupColors,
                             worlds = worlds,
                             isDark = isDark,
+                            showCover = friendCoverEnabled,
                             revealedFriendId = revealedFriendId,
                             onRevealChanged = { id, revealed ->
                                 if (revealed) revealedFriendId = id
@@ -643,6 +648,7 @@ fun FriendsScreen(
                                     groupColors = groupColors,
                                     worlds = worlds,
                                     isDark = isDark,
+                                    showCover = friendCoverEnabled,
                                     revealedFriendId = revealedFriendId,
                                     onRevealChanged = { id, revealed ->
                                         if (revealed) revealedFriendId = id
@@ -714,6 +720,7 @@ private fun LazyListScope.friendItems(
     groupColors: Map<String, Color>,
     worlds: Map<String, WorldEntity>,
     isDark: Boolean,
+    showCover: Boolean,
     revealedFriendId: String?,
     onRevealChanged: (String, Boolean) -> Unit,
     onOpenFriend: (String) -> Unit,
@@ -744,6 +751,9 @@ private fun LazyListScope.friendItems(
                 else null
             }
             val worldName = friend.worldId?.let { worlds[it]?.name }
+            val coverUrl = if (!showCover || !friend.isOnline) null else friend.worldId?.let { id ->
+                worlds[id]?.let { it.imageUrl ?: it.thumbnailUrl }
+            }
             val onAction = remember(friend) { { onSetPinned(friend.id, !friend.pinned) } }
             val onCardRevealChanged = remember(friend.id) {
                 { revealed: Boolean -> onRevealChanged(friend.id, revealed) }
@@ -765,11 +775,12 @@ private fun LazyListScope.friendItems(
                     }
                 }
             }
-            val cardContent = remember(friend, worldName, barColor, isDark) {
+            val cardContent = remember(friend, worldName, coverUrl, barColor, isDark) {
                 @Composable {
                     FriendCard(
                         friend = friend,
                         worldName = worldName,
+                        coverUrl = coverUrl,
                         roomColor = barColor,
                         isDark = isDark,
                         onClick = onClick,
@@ -916,6 +927,7 @@ private fun SwipeReveal(
 private fun FriendCard(
     friend: FriendEntity,
     worldName: String?,
+    coverUrl: String?,
     roomColor: Color?,
     isDark: Boolean,
     onClick: () -> Unit,
@@ -924,6 +936,7 @@ private fun FriendCard(
         runCatching { TrustRank.valueOf(friend.trustRank) }.getOrDefault(TrustRank.VISITOR)
     }
     val nameColor = remember(rank, isDark) { trustNameColor(rank, isDark) }
+    val cardColor = CardDefaults.cardColors().containerColor
     Card(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
@@ -931,6 +944,9 @@ private fun FriendCard(
         // on lower-end GPUs; the container color keeps cards visually distinct.
         elevation = CardDefaults.cardElevation(0.dp),
     ) {
+        Box {
+        // Current world cover, right-anchored and fading leftwards.
+        WorldCoverBackdrop(url = coverUrl, cardColor = cardColor)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -965,7 +981,7 @@ private fun FriendCard(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         fontWeight = FontWeight.Medium,
-                        // Keeps the pronouns / rank chip visible on long names.
+                        // Keeps the pronouns visible on long names.
                         modifier = Modifier.weight(1f, fill = false),
                     )
                     val pronouns = friend.pronouns?.trim()?.takeIf { it.isNotEmpty() }
@@ -978,13 +994,11 @@ private fun FriendCard(
                             maxLines = 1,
                             softWrap = false,
                             overflow = TextOverflow.Ellipsis,
-                            // Long pronouns used to push the rank chip off the
-                            // row; cap the width and ellipsize instead.
+                            // Long pronouns used to push the row off the
+                            // edge; cap the width and ellipsize instead.
                             modifier = Modifier.widthIn(max = 84.dp),
                         )
                     }
-                    Spacer(Modifier.width(6.dp))
-                    RankChip(friend, isDark)
                 }
                 Spacer(Modifier.height(2.dp))
                 val status = remember(friend, worldName) { statusLine(friend, worldName) }
@@ -1022,13 +1036,24 @@ private fun FriendCard(
                     )
                 }
             }
+            // The status dot sits over the world cover, so it gets a card
+            // coloured halo to stay legible.
             Box(
                 modifier = Modifier
                     .padding(start = 8.dp)
-                    .size(10.dp)
+                    .size(if (coverUrl == null) 10.dp else 16.dp)
                     .clip(CircleShape)
-                    .background(Status.color(friend.status, friend.isOnline)),
-            )
+                    .background(if (coverUrl == null) Color.Transparent else cardColor.copy(alpha = 0.55f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(10.dp)
+                        .clip(CircleShape)
+                        .background(Status.color(friend.status, friend.isOnline)),
+                )
+            }
+        }
         }
     }
 }
@@ -1478,7 +1503,7 @@ private fun FavoritesTab(
     }
     val current = selected
     if (current != null) {
-        WorldDetailSheet(world = current, onDismiss = { selected = null })
+        WorldDetailSheet(world = current.toDetailInfo(), onDismiss = { selected = null })
     }
 }
 
@@ -2149,118 +2174,4 @@ private fun LastSyncFooter(flow: StateFlow<Long>) {
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.fillMaxWidth(),
     )
-}
-
-/** World detail shown when a favorite cell is tapped. */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun WorldDetailSheet(world: WorldDto, onDismiss: () -> Unit) {
-    val context = LocalContext.current
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
-                .padding(start = 20.dp, end = 20.dp, bottom = 28.dp),
-        ) {
-            AsyncImage(
-                model = world.imageUrl ?: world.thumbnailImageUrl,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(16f / 9f)
-                    .clip(RoundedCornerShape(12.dp)),
-                placeholder = ColorPainter(MaterialTheme.colorScheme.surfaceVariant),
-                error = ColorPainter(MaterialTheme.colorScheme.surfaceVariant),
-            )
-            Spacer(Modifier.height(14.dp))
-            Text(
-                world.name,
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.SemiBold,
-            )
-            if (!world.authorName.isNullOrBlank()) {
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "作者：" + world.authorName,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            val meta = listOfNotNull(
-                world.capacity?.let { "容量：$it" },
-                releaseStatusText(world.releaseStatus)?.let { "状态：$it" },
-            )
-            if (meta.isNotEmpty()) {
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    meta.joinToString(" · "),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            if (!world.description.isNullOrBlank()) {
-                Spacer(Modifier.height(12.dp))
-                HorizontalDivider()
-                Spacer(Modifier.height(12.dp))
-                Text(
-                    "简介",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    world.description,
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-            }
-            if (!world.tags.isNullOrEmpty()) {
-                Spacer(Modifier.height(12.dp))
-                Text(
-                    "标签：" + world.tags.joinToString(" · "),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Spacer(Modifier.height(12.dp))
-            HorizontalDivider()
-            Spacer(Modifier.height(12.dp))
-            Text(
-                world.id,
-                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(14.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                OutlinedButton(onClick = {
-                    val cm = context.getSystemService(ClipboardManager::class.java)
-                    cm.setPrimaryClip(ClipData.newPlainText("worldId", world.id))
-                    Toast.makeText(context, "世界ID已复制", Toast.LENGTH_SHORT).show()
-                }) {
-                    Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("复制ID")
-                }
-                Spacer(Modifier.width(10.dp))
-                Button(onClick = {
-                    runCatching {
-                        val intent = Intent(
-                            Intent.ACTION_VIEW,
-                            Uri.parse("https://vrchat.com/home/world/" + world.id),
-                        )
-                        context.startActivity(intent)
-                    }
-                }) {
-                    Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("在VRChat中打开")
-                }
-            }
-        }
-    }
 }

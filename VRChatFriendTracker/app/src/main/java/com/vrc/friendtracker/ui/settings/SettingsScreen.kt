@@ -67,6 +67,7 @@ fun SettingsScreen(onBack: () -> Unit) {
     val vm: SettingsViewModel = viewModel(factory = AppViewModelFactory(app))
     val displayName by vm.displayName.collectAsState()
     val darkMode by vm.darkMode.collectAsState()
+    val friendCoverEnabled by vm.friendCoverEnabled.collectAsState()
     val monitorEnabled by vm.monitorEnabled.collectAsState()
     val monitorRunning by app.monitorRunning.collectAsState()
     val watchedFriendCount by vm.watchedFriendCount.collectAsState()
@@ -177,6 +178,27 @@ fun SettingsScreen(onBack: () -> Unit) {
                     Spacer(Modifier.height(4.dp))
                     Text(
                         "开启后强制使用深色主题",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(14.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            "好友卡片显示房间封面",
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Switch(
+                            checked = friendCoverEnabled,
+                            onCheckedChange = { vm.setFriendCoverEnabled(it) },
+                        )
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "在好友卡片右侧显示其所在房间的地图封面（从右往左淡出）；关闭后卡片不再加载封面，滑动更省资源",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

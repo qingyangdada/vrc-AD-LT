@@ -6,7 +6,9 @@ import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -52,6 +54,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -67,6 +70,8 @@ import com.vrc.friendtracker.data.db.HistoryType
 import com.vrc.friendtracker.data.db.WorldEntity
 import com.vrc.friendtracker.ui.AppViewModelFactory
 import com.vrc.friendtracker.ui.UserAvatar
+import com.vrc.friendtracker.ui.WorldDetailSheet
+import com.vrc.friendtracker.ui.copyWorldName
 import com.vrc.friendtracker.ui.appFrom
 import com.vrc.friendtracker.ui.detail.FriendDetailViewModel.MutualState
 import com.vrc.friendtracker.ui.friends.RankChip
@@ -93,6 +98,7 @@ fun FriendDetailScreen(
     val history by vm.history.collectAsState()
     val worlds by vm.worlds.collectAsState()
     val instance by vm.instance.collectAsState()
+    val worldDetail by vm.worldDetail.collectAsState()
     val refreshing by vm.refreshing.collectAsState()
     val mutual by vm.mutual.collectAsState()
     var mutualExpanded by remember { mutableStateOf(false) }
@@ -195,7 +201,7 @@ fun FriendDetailScreen(
             ) {
                 item { HeaderCard(current, isDark) }
                 item { BioCard(current) }
-                item { RoomCard(current, worlds, instance) }
+                item { RoomCard(current, worlds, instance, onOpenWorld = vm::openWorld) }
                 item {
                     val loaded = mutual as? MutualState.Loaded
                     Row(
@@ -289,6 +295,11 @@ fun FriendDetailScreen(
 
             }
         }
+    }
+
+    val detail = worldDetail
+    if (detail != null) {
+        WorldDetailSheet(world = detail, onDismiss = vm::closeWorld)
     }
 }
 
@@ -411,8 +422,15 @@ private fun BioCard(friend: FriendEntity) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun RoomCard(friend: FriendEntity, worlds: Map<String, WorldEntity>, instance: InstanceDto?) {
+private fun RoomCard(
+    friend: FriendEntity,
+    worlds: Map<String, WorldEntity>,
+    instance: InstanceDto?,
+    onOpenWorld: (String) -> Unit,
+) {
+    val context = LocalContext.current
     Card {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {
             Text("当前房间", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
@@ -425,7 +443,17 @@ private fun RoomCard(friend: FriendEntity, worlds: Map<String, WorldEntity>, ins
             when (parts.kind) {
                 InstanceUtil.LocationParts.Kind.ONLINE_WORLD -> {
                     val world = parts.worldId?.let { worlds[it] }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    val worldName = world?.name ?: worldDisplayName(parts.worldId, worlds)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .combinedClickable(
+                                onClick = { parts.worldId?.let(onOpenWorld) },
+                                onLongClick = { copyWorldName(context, worldName) },
+                            ),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
                         if (world?.thumbnailUrl != null) {
                             AsyncImage(
                                 model = world.thumbnailUrl,
@@ -439,7 +467,7 @@ private fun RoomCard(friend: FriendEntity, worlds: Map<String, WorldEntity>, ins
                         }
                         Column {
                             Text(
-                                world?.name ?: worldDisplayName(parts.worldId, worlds),
+                                worldName,
                                 style = MaterialTheme.typography.bodyLarge,
                                 fontWeight = FontWeight.Medium,
                             )
@@ -448,6 +476,12 @@ private fun RoomCard(friend: FriendEntity, worlds: Map<String, WorldEntity>, ins
                                 roomDetailLine(friend, parts, instance),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "点击查看地图详情 · 长按复制名称",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
                             )
                         }
                     }
